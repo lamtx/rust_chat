@@ -1,22 +1,23 @@
 use std::ops::Deref;
-use crate::app::App;
-use crate::error;
-use crate::misc::{Result, HttpRequest, HttpResponse, ToListResponse, ok_response, StringExt, Params, AppError};
-use crate::model::CreateParams;
-use hyper::{Body, Response, StatusCode};
+
+use hyper::{Body, Response};
 use routerify::RequestInfo;
 
-pub async fn default_handler(req: HttpRequest) -> Result<HttpResponse> {
+use crate::app::App;
+use crate::misc::{AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt, ToListResponse};
+use crate::model::CreateParams;
+
+pub async fn default_handler(req: HttpRequest) -> AppResult<HttpResponse> {
     let uri = req.uri();
     let action = uri.path().substring_after_last('/').to_string();
     let room = uri.path().substring_before_last('/').to_string();
     #[cfg(debug_assertions)]
     println!("handle: {uri}");
     match action.as_str() {
-        "" => error!(StatusCode::NOT_FOUND, "Not found".to_string()),
+        "" => not_found(),
         "create" => {
             if room.is_empty() {
-                error!(StatusCode::NOT_FOUND, "Not found".to_string())
+                not_found()
             } else {
                 let params = Params::parse_uri(uri)?;
                 create_room(req, room, params).await
@@ -53,18 +54,19 @@ fn app(req: &HttpRequest) -> &App {
 }
 
 /// matches /path/to/room/create
-async fn create_room(req: HttpRequest, room: String, params: CreateParams) -> Result<HttpResponse> {
+async fn create_room(req: HttpRequest, room: String, params: CreateParams) -> AppResult<HttpResponse> {
     app(&req).create_room(room, params).await?;
     Ok(ok_response())
 }
 
 /// matches /status
-async fn dump_status(req: HttpRequest) -> Result<HttpResponse> {
-    let status = app(&req).status().await?;
+async fn dump_status(req: HttpRequest) -> AppResult<HttpResponse> {
+    let status = app(&req).status().await;
     Ok(status.to_response())
 }
 
 /// matches /path/to/room/action
-async fn room_action(req: HttpRequest, room: String, action: String) -> Result<HttpResponse> {
-    todo!()
+async fn room_action(req: HttpRequest, room: String, action: String) -> AppResult<HttpResponse> {
+    let room_impl = app(&req).get_room(&room).await?;
+    room_impl.handle_request(req, action).await
 }

@@ -1,5 +1,5 @@
 pub use app::App;
-pub use room::Room;
+pub use room::{Room, RoomParams};
 
 mod app;
 mod room;

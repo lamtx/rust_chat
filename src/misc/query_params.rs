@@ -1,14 +1,14 @@
 use futures::future::err;
 use hyper::Uri;
 use querystring::{querify, QueryParams as P};
-use crate::misc::{error, Result};
+use crate::misc::{error, AppResult};
 
 pub trait Get<T> {
     fn get(&self, name: &str) -> T;
 }
 
 pub trait TryGet<T> {
-    fn try_get(&self, name: &str) -> Result<T>;
+    fn try_get(&self, name: &str) -> AppResult<T>;
 }
 
 pub struct QueryParams<'a> (pub P<'a>);
@@ -23,15 +23,15 @@ impl<'a> QueryParams<'a> {
     }
 }
 
-pub fn parse_param<T>(uri: &Uri) -> Result<T> where T: Params {
+pub fn parse_param<T>(uri: &Uri) -> AppResult<T> where T: Params {
     T::parse(&QueryParams::parse(uri.query()))
 }
 
 pub trait Params {
-    fn parse(params: &QueryParams) -> Result<Self>
+    fn parse(params: &QueryParams) -> AppResult<Self>
         where Self: Sized;
 
-    fn parse_uri(uri: &Uri) -> Result<Self> where Self: Sized {
+    fn parse_uri(uri: &Uri) -> AppResult<Self> where Self: Sized {
         Self::parse(&QueryParams::parse(uri.query()))
     }
 }
@@ -45,7 +45,7 @@ impl<'a> Get<Option<String>> for QueryParams<'a> {
 }
 
 impl<'a> TryGet<String> for QueryParams<'a> {
-    fn try_get(&self, name: &str) -> Result<String> {
+    fn try_get(&self, name: &str) -> AppResult<String> {
         let value: Option<String> = self.get(name);
         match value {
             None => error(format!("{name} is required")),

@@ -1,5 +1,3 @@
-#![feature(trait_alias)]
-
 mod model;
 mod misc;
 #[macro_use]

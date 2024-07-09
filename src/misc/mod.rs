@@ -1,8 +1,10 @@
 pub mod date_serde;
 
+use std::string::ToString;
 use hyper::StatusCode;
 pub use string_ext::StringExt;
-pub use app_error::AppError;
+pub use option_ext::OptionExt;
+pub use app_error::{AppError, ToBadRequest};
 pub use query_params::{Params, QueryParams, Get, TryGet};
 
 pub use response::*;
@@ -11,22 +13,24 @@ mod string_ext;
 mod app_error;
 mod query_params;
 mod response;
+mod option_ext;
 
-pub type Result<T> = std::result::Result<T, AppError>;
+pub type AppResult<T> = Result<T, AppError>;
 
 pub type HttpRequest = hyper::http::Request<hyper::body::Body>;
 
 pub type HttpResponse = hyper::http::Response<hyper::body::Body>;
 
-/// Provided by the requester and used by the manager task to send
-/// the command response back to the requester.
-pub type Responder<T> = tokio::sync::oneshot::Sender<Result<T>>;
+#[inline]
+pub fn error<T>(message: String) -> AppResult<T> {
+    Err(AppError::bad_request(message))
+}
 
 #[inline]
-pub fn error<T>(message: String) -> Result<T> {
+pub fn not_found<T>() -> AppResult<T> {
     Err(AppError {
-        code: StatusCode::BAD_REQUEST,
-        message: Some(message),
+        code: StatusCode::NOT_FOUND,
+        message: Some("Not found".to_string()),
     })
 }
 

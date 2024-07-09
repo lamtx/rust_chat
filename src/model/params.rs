@@ -1,4 +1,4 @@
-use crate::misc::{Params, QueryParams, Get, TryGet, Result};
+use crate::misc::{Params, QueryParams, Get, TryGet, AppResult};
 
 pub struct CreateParams {
     pub secret: String,
@@ -7,7 +7,7 @@ pub struct CreateParams {
 }
 
 impl Params for CreateParams {
-    fn parse(params: &QueryParams) -> Result<CreateParams> {
+    fn parse(params: &QueryParams) -> AppResult<CreateParams> {
         Ok(CreateParams {
             secret: params.try_get("secret")?,
             post: params.get("post"),
@@ -20,10 +20,28 @@ pub struct DestroyParams {
     pub secret: String,
 }
 
+impl Params for DestroyParams {
+    fn parse(params: &QueryParams) -> AppResult<DestroyParams> {
+        Ok(DestroyParams {
+            secret: params.try_get("secret")?,
+        })
+    }
+}
+
 pub struct JoinParams {
     pub username: Option<String>,
     pub display: Option<String>,
     pub image_url: Option<String>,
+}
+
+impl Params for JoinParams {
+    fn parse(params: &QueryParams) -> AppResult<JoinParams> {
+        Ok(JoinParams {
+            username: params.get("username"),
+            display: params.get("display"),
+            image_url: params.get("imageUrl"),
+        })
+    }
 }
 
 pub struct LastAnnouncementParams {
