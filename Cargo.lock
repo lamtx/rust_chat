@@ -672,16 +672,8 @@ dependencies = [
  "log",
  "querystring",
  "routerify",
- "rust_common",
  "serde",
  "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rust_common"
-version = "0.1.0"
-dependencies = [
  "tokio",
 ]
 

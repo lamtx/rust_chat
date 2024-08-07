@@ -1,21 +1,22 @@
+use std::net::SocketAddr;
+
+use hyper::Server;
+use routerify::{Router, RouterService};
+
+use crate::app::handlers;
+use crate::misc::*;
+use crate::service::ChatService;
+
 mod model;
 mod misc;
 #[macro_use]
 mod app;
-
-use hyper::{Body, Response, Server, StatusCode};
-use routerify::{Router, RouterService, RequestInfo};
-use std::net::SocketAddr;
-use std::ops::Deref;
-use tokio::task::yield_now;
-
-use crate::app::{App, handlers};
-use crate::misc::{*};
+mod service;
 
 #[tokio::main]
 async fn main() {
     let router = Router::builder()
-        .data(App::create())
+        .data(ChatService::create())
         .any(handlers::default_handler)
         .err_handler_with_info(handlers::error_handler)
         .build()

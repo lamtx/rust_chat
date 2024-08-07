@@ -37,7 +37,7 @@ pub enum TextRoomRequest {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::request::TextRoomRequest;
+    use crate::model::text_room_request::TextRoomRequest;
 
     #[test]
     fn it_works() {

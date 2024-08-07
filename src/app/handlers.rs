@@ -3,9 +3,9 @@ use std::ops::Deref;
 use hyper::{Body, Response};
 use routerify::RequestInfo;
 
-use crate::app::App;
-use crate::misc::{AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt, ToListResponse};
-use crate::model::CreateParams;
+use crate::misc::{AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt, ToResponse};
+use crate::model::{CreateParams, DestroyParams, JoinParams};
+use crate::service::{ChatService, Room};
 
 pub async fn default_handler(req: HttpRequest) -> AppResult<HttpResponse> {
     let uri = req.uri();
@@ -48,25 +48,47 @@ pub async fn error_handler(err: routerify::RouteError, _: RequestInfo) -> HttpRe
         .unwrap()
 }
 
-fn app(req: &HttpRequest) -> &App {
+fn app(req: &HttpRequest) -> &ChatService {
     use routerify::prelude::RequestExt;
-    req.data::<App>().unwrap()
+    req.data::<ChatService>().unwrap()
 }
 
 /// matches /path/to/room/create
 async fn create_room(req: HttpRequest, room: String, params: CreateParams) -> AppResult<HttpResponse> {
-    app(&req).create_room(room, params).await?;
+    app(&req).tx.CreateRoom(Room {
+        uid: room,
+        secret: params.secret,
+        post: params.post,
+        post_types: params.post_types,
+    }).await?;
     Ok(ok_response())
 }
 
 /// matches /status
 async fn dump_status(req: HttpRequest) -> AppResult<HttpResponse> {
-    let status = app(&req).status().await;
+    let status = app(&req).tx.Status().await;
     Ok(status.to_response())
 }
 
 /// matches /path/to/room/action
 async fn room_action(req: HttpRequest, room: String, action: String) -> AppResult<HttpResponse> {
-    let room_impl = app(&req).get_room(&room).await?;
-    room_impl.handle_request(req, action).await
+    let char_room = app(&req).tx.GetRoom(room).await?;
+
+    match action.as_str() {
+        "join" => {
+            let params = JoinParams::parse_uri(req.uri())?;
+            char_room.join(req, params).await
+        }
+        "destroy" => {
+            let params = DestroyParams::parse_uri(req.uri())?;
+            if params.secret == char_room.secret {
+                char_room.tx.Destroy().await;
+                Ok(ok_response())
+            } else {
+                Err(AppError::secret())
+            }
+        }
+        "status" => Ok(char_room.tx.Status().await.to_response()),
+        _ => not_found()
+    }
 }

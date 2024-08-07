@@ -2,19 +2,19 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use hyper_tungstenite::HyperWebsocket;
 use hyper_tungstenite::tungstenite::Message;
 use tokio::sync::mpsc;
-use crate::app::Room;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::misc::{AppResult, ToBadRequest};
+use crate::service::ChatRoom;
 
 #[derive(Clone)]
-pub struct Client {
+pub struct ChatClient {
     pub id: usize,
     pub me: Participant,
     tx: mpsc::Sender<Command>,
 }
 
 pub struct ClientParam {
-    pub room: Room,
+    pub room: ChatRoom,
     pub me: Participant,
     pub id: usize,
 }
@@ -34,10 +34,10 @@ enum Command {
 }
 
 impl ClientParam {
-    pub async fn listen_to(self, socket: HyperWebsocket) -> AppResult<Client> {
+    pub async fn listen_to(self, socket: HyperWebsocket) -> AppResult<ChatClient> {
         let (mut sink, mut stream) = socket.await.to_bad_request()?.split();
         let (tx, mut rx) = mpsc::channel::<Command>(30);
-        let client = Client {
+        let client = ChatClient {
             id: self.id,
             tx: tx.clone(),
             me: self.me.clone(),
@@ -92,7 +92,7 @@ impl ClientParam {
     }
 }
 
-impl Client {
+impl ChatClient {
     pub fn send(&self, body: String) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -141,7 +141,7 @@ impl ClientImpl {
         match request {
             TextRoomRequest::Announcement { secret, r#type, text, transaction, .. } => {
                 if self.params.room.secret == secret {
-                    self.params.room.announcement(self.params.me.clone(), r#type, text);
+                    self.announcement(r#type, text);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
@@ -149,7 +149,7 @@ impl ClientImpl {
             }
             TextRoomRequest::Ban { secret, username, transaction } => {
                 if self.params.room.secret == secret {
-                    self.params.room.ban(self.params.me.username.clone(), username);
+                    self.ban(username);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
@@ -164,6 +164,7 @@ impl ClientImpl {
             }
         }
     }
+
     fn send(&self, body: String) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -171,13 +172,33 @@ impl ClientImpl {
         });
     }
 
+    fn announcement(&self, r#type: String, text: String) {
+        let room = self.params.room.clone();
+        let me = self.params.me.clone();
+        tokio::spawn(async move {
+            room.tx.Announcement(me, r#type, text).await;
+        });
+    }
+
+    fn ban(&self, username: String) {
+        let room = self.params.room.clone();
+        let me = self.params.me.username.clone();
+        tokio::spawn(async move {
+            room.tx.Ban(me, username).await;
+        });
+    }
+
     fn leave(&self) {
         self.detach();
-        self.params.room.broadcast(TextRoomEvent::Left {
+        let room = self.params.room.clone();
+        let event = TextRoomEvent::Left {
             username: self.params.me.username.clone(),
             display: self.params.me.display.clone(),
             participants: 0, // FIXME
-        })
+        };
+        tokio::spawn(async move {
+            room.broadcast(event).await
+        });
     }
     fn close(&mut self) {
         self.detach();
