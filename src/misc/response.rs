@@ -1,29 +1,8 @@
 use hyper::{Body, Response, StatusCode};
 use hyper::header::CONTENT_TYPE;
 use serde::Serialize;
+use serde_json::json;
 use crate::misc::HttpResponse;
-
-pub trait ToResponse {
-    fn to_response(&self) -> HttpResponse;
-}
-
-pub trait ToListResponse {
-    fn to_response(&self) -> HttpResponse;
-}
-
-impl<T> ToResponse for T where T: Serialize {
-    fn to_response(&self) -> HttpResponse {
-        let json = serde_json::to_string(self).unwrap();
-        json_response(json)
-    }
-}
-
-impl<T> ToListResponse for Vec<T> where T: Serialize {
-    fn to_response(&self) -> HttpResponse {
-        let json = serde_json::to_string(self).unwrap();
-        json_response(json)
-    }
-}
 
 pub fn ok_response() -> HttpResponse {
     Response::builder()
@@ -40,3 +19,11 @@ pub fn json_response(json: String) -> HttpResponse {
         .unwrap()
 }
 
+#[macro_export]
+macro_rules! json_response {
+    ($($json:tt)+) => {{
+        let value = json!($($json)+);
+        let json_body = serde_json::to_string(&value).unwrap();
+        json_response(json_body)
+    }};
+}

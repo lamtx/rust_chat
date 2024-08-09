@@ -2,9 +2,12 @@ use std::ops::Deref;
 
 use hyper::{Body, Response};
 use routerify::RequestInfo;
-
-use crate::misc::{AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt, ToResponse};
-use crate::model::{CreateParams, DestroyParams, JoinParams};
+use serde_json::json;
+use crate::json_response;
+use crate::misc::{
+    AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt,
+};
+use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams};
 use crate::service::{ChatService, Room};
 
 pub async fn default_handler(req: HttpRequest) -> AppResult<HttpResponse> {
@@ -67,28 +70,48 @@ async fn create_room(req: HttpRequest, room: String, params: CreateParams) -> Ap
 /// matches /status
 async fn dump_status(req: HttpRequest) -> AppResult<HttpResponse> {
     let status = app(&req).tx.Status().await;
-    Ok(status.to_response())
+    Ok(json_response!(status))
 }
 
 /// matches /path/to/room/action
 async fn room_action(req: HttpRequest, room: String, action: String) -> AppResult<HttpResponse> {
-    let char_room = app(&req).tx.GetRoom(room).await?;
+    let chat_room = app(&req).tx.GetRoom(room).await?;
 
     match action.as_str() {
         "join" => {
             let params = JoinParams::parse_uri(req.uri())?;
-            char_room.join(req, params).await
+            chat_room.join(req, params).await
         }
         "destroy" => {
             let params = DestroyParams::parse_uri(req.uri())?;
-            if params.secret == char_room.secret {
-                char_room.tx.Destroy().await;
+            if params.secret == chat_room.secret {
+                chat_room.tx.spawn().Destroy();
                 Ok(ok_response())
             } else {
                 Err(AppError::secret())
             }
         }
-        "status" => Ok(char_room.tx.Status().await.to_response()),
+        "count" => {
+            Ok(json_response!({
+                "count": chat_room.tx.Count().await,
+            }))
+        }
+        "status" => {
+            Ok(json_response!(chat_room.tx.Status().await))
+        }
+        "lastAnnouncement" => {
+            let params = LastAnnouncementParams::parse_uri(req.uri())?;
+            let announcements = chat_room.tx.LastAnnouncement(params.types).await;
+            Ok(json_response!(announcements))
+        }
+        "participants" => {
+            let participants = chat_room.tx.Participants().await;
+            Ok(json_response!(participants))
+        }
+        "messages" => {
+            let messages = chat_room.tx.Messages().await;
+            Ok(json_response(messages))
+        }
         _ => not_found()
     }
 }

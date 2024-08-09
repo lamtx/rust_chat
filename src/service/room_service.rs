@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use chrono::Utc;
 use serde::Serialize;
 use tokio::sync::mpsc::channel;
@@ -5,24 +6,29 @@ use tokio::sync::mpsc::channel;
 use crate::{command, error};
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, RoomInfo, TextRoomEvent};
-use crate::service::client_service::{ChatClient, ClientParam};
+use crate::service::client_service::{ChatClient};
 use crate::service::Room;
 
 command! {
-    Status() -> RoomInfo,
-    AddClient(client: ChatClient),
-    RemoveClient(id: usize),
-    Announcement(sender: Participant,r#type: String,text: String),
-    Ban(from: Option<String>,victim: String),
-    Broadcast(message: String),
-    GetNextId()  -> usize,
-    Destroy(),
+    pub Status() -> RoomInfo,
+    pub Count() -> usize,
+    pub AddClient(client: ChatClient),
+    pub RemoveClient(id: usize),
+    pub Announcement(sender: Participant, r#type: String, text: String),
+    pub Ban(from: Option<String>,victim: String),
+    pub Broadcast(message: String),
+    pub GetNextId()  -> usize,
+    pub LastAnnouncement(types: Vec<String>) -> HashMap<String, String>,
+    pub Participants() -> Vec<Participant>,
+    /// Return the serialized json of all [Message] in this room.
+    pub Messages() -> String,
+    pub Destroy(),
 }
 
 #[derive(Clone)]
 pub struct ChatRoom {
-    pub tx: CommandSender,
     pub secret: String,
+    pub tx: CommandSender,
 }
 
 impl ChatRoom {
@@ -44,6 +50,9 @@ impl ChatRoom {
                 match command {
                     Command::Status { resp_tx } => {
                         resp_tx.send(state.status()).unwrap();
+                    }
+                    Command::Count { resp_tx } => {
+                        resp_tx.send(state.count()).unwrap();
                     }
                     Command::AddClient { client, resp_tx } => {
                         let id = client.id;
@@ -76,6 +85,16 @@ impl ChatRoom {
                         state.destroy();
                         resp_tx.send(()).unwrap();
                     }
+                    Command::LastAnnouncement { types, resp_tx } => {
+                        resp_tx.send(state.last_announcement(types)).unwrap()
+                    }
+                    Command::Participants { resp_tx } => {
+                        resp_tx.send(state.participants()).unwrap();
+                    }
+                    Command::Messages { resp_tx } => {
+                        let json = serde_json::to_string(&state.messages).unwrap();
+                        resp_tx.send(json).unwrap();
+                    }
                 }
             }
         });
@@ -90,18 +109,15 @@ impl ChatRoom {
             let this = self.clone();
             tokio::spawn(async move {
                 let id = this.tx.GetNextId().await;
-
-                let client = ClientParam {
-                    id,
-                    me: Participant {
-                        username: params.username,
-                        display: params.display,
-                    },
-                    room: this.clone(),
-                }.listen_to(websocket).await;
-
+                let me = Participant {
+                    username: params.username,
+                    display: params.display,
+                };
+                let client = ChatClient::create(websocket, this.clone(), me, id).await;
                 if let Ok(client) = client {
                     this.tx.AddClient(client).await;
+                } else {
+                    panic!("unable to create client?")
                 }
             });
             // Return the response so the spawned future can continue.
@@ -110,14 +126,7 @@ impl ChatRoom {
             error!("The request is not upgradable to web socket.".to_string())
         }
     }
-
-    pub fn remove(&self, client_id: usize) {
-        let commands = self.clone();
-        tokio::spawn(async move {
-            commands.tx.RemoveClient(client_id).await;
-        });
-    }
-
+    
     pub async fn broadcast(&self, event: TextRoomEvent) {
         let message = serde_json::to_string(&event).unwrap();
         self.tx.Broadcast(message).await
@@ -143,10 +152,32 @@ impl ChatRoomInner {
         }
     }
 
+    fn count(&self) -> usize {
+        self.clients.len()
+    }
+
+    fn participants(&self) -> Vec<Participant> {
+        self.clients.iter().map(|e| e.me.clone()).collect()
+    }
+
+    fn last_announcement(&self, types: Vec<String>) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        for r#type in types {
+            let message = self.messages.iter().rfind(
+                |x| x.textroom == Message::ANNOUNCEMENT && x.r#type == r#type
+            );
+            if let Some(text) = message {
+                result.insert(r#type, text.r#type.clone());
+            }
+        }
+
+        result
+    }
+
     fn announcement(&mut self, sender: Participant, r#type: String, text: String) {
         let now = Utc::now();
         let message = Message {
-            room: self.room.uid.as_str().substring_after_last('/').to_string(),
+            room: self.room.name().to_string(),
             textroom: Message::ANNOUNCEMENT.to_string(),
             r#type: r#type.clone(),
             text: text.clone(),
@@ -161,13 +192,13 @@ impl ChatRoomInner {
 
     fn ban(&mut self, from: Option<String>, victim: String) {
         println!("{:?} wants to ban {victim}", from);
-        let victims = self.clients.iter().filter(|&e|
-        e.me.username.contains(&victim)
+        let victims = self.clients.iter().filter(
+            |&e| e.me.username.contains(&victim)
         );
         let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
         for client in victims {
-            client.send(event.clone());
-            client.leave();
+            client.tx.Send(event.clone());
+            client.tx.Leave();
         }
         self.post(&Message {
             textroom: Message::MODERATE.to_string(),
@@ -183,19 +214,19 @@ impl ChatRoomInner {
         // FIXME
     }
 
-    fn broadcast_json<T: Serialize>(&self, body: &T) {
+    async fn broadcast_json<T: Serialize>(&self, body: &T) {
         let content = serde_json::to_string(body).unwrap();
         self.broadcast(content)
     }
     fn broadcast(&self, body: String) {
         for client in &self.clients {
-            client.send(body.clone())
+            client.spawn_send(body.clone())
         }
     }
 
     async fn close(&mut self) {
         for client in &self.clients {
-            client.close().await;
+            client.tx.Close().await;
         }
         self.clients.clear();
         self.detach();

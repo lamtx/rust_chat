@@ -1,9 +1,10 @@
+
 #[macro_export]
 macro_rules! command {
     (
         $(
            $(#[$docs:meta])*
-           $name:ident($($param:ident: $input:ty),*) $(-> $output:ty)?,
+           $vis:vis $name:ident($($param:ident: $input:ty),*) $(-> $output:ty)?,
         )+
     ) => {
         #[warn(unused_parens)]
@@ -22,13 +23,35 @@ macro_rules! command {
         }
         impl CommandSender {
         $(
-            pub async fn $name (&self, $($param: $input,)*) $(-> $output)? {
+            $vis async fn $name (&self, $($param: $input,)*) $(-> $output)? {
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                 let data = Command::$name{$($param,)* resp_tx};
                 self.tx.send(data).await.unwrap();
                 resp_rx.await.unwrap()
             }
         )+
+        }
+        pub struct SpawnCommandSender {
+            tx: tokio::sync::mpsc::Sender<Command>,
+        }
+        
+        impl SpawnCommandSender {
+        $(
+            $vis fn $name (self, $($param: $input,)*) {
+                let (resp_tx, _) = tokio::sync::oneshot::channel();
+                let data = Command::$name{$($param,)* resp_tx};
+                let tx = self.tx;
+                tokio::spawn(async move{
+                    tx.send(data).await.unwrap();
+                });
+            }
+        )+
+        }
+        
+        impl CommandSender {
+            pub fn spawn(&self) -> SpawnCommandSender {
+                SpawnCommandSender {tx: self.tx.clone() }
+            }
         }
     };
 }

@@ -42,5 +42,3 @@ pub enum TextRoomEvent {
         r#type: String,
     },
 }
-
-pub struct TextRoom;

@@ -1,6 +1,7 @@
 pub use create_params::CreateParams;
 pub use destroy_params::DestroyParams;
 pub use join_params::JoinParams;
+pub use last_announcement_params::LastAnnouncementParams;
 
 mod create_params;
 mod destroy_params;

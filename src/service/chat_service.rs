@@ -8,9 +8,9 @@ use crate::model::{RoomInfo};
 use crate::service::{ChatRoom, Room};
 
 command! {
-    CreateRoom(room: Room) -> AppResult<()>,
-    Status()  -> Vec<RoomInfo>,
-    GetRoom(room: String) -> AppResult<ChatRoom>,
+    pub CreateRoom(room: Room) -> AppResult<()>,
+    pub Status()  -> Vec<RoomInfo>,
+    pub GetRoom(room: String) -> AppResult<ChatRoom>,
 }
 
 pub struct ChatService {

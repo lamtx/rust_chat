@@ -2,68 +2,66 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use hyper_tungstenite::HyperWebsocket;
 use hyper_tungstenite::tungstenite::Message;
 use tokio::sync::mpsc;
-use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
+
+use crate::command;
 use crate::misc::{AppResult, ToBadRequest};
+use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
 
 #[derive(Clone)]
 pub struct ChatClient {
     pub id: usize,
     pub me: Participant,
-    tx: mpsc::Sender<Command>,
+    pub tx: CommandSender,
 }
 
-pub struct ClientParam {
-    pub room: ChatRoom,
-    pub me: Participant,
-    pub id: usize,
-}
-
-pub struct ClientImpl {
-    params: ClientParam,
-    tx: mpsc::Sender<Command>,
-}
-
-enum Command {
-    OnListen(String),
-    Close,
-    Send {
-        body: String,
-    },
-    Leave,
-}
-
-impl ClientParam {
-    pub async fn listen_to(self, socket: HyperWebsocket) -> AppResult<ChatClient> {
+impl ChatClient {
+    pub async fn create(
+        socket: HyperWebsocket,
+        room: ChatRoom,
+        me: Participant,
+        my_id: usize,
+    ) -> AppResult<ChatClient> {
         let (mut sink, mut stream) = socket.await.to_bad_request()?.split();
         let (tx, mut rx) = mpsc::channel::<Command>(30);
-        let client = ChatClient {
-            id: self.id,
-            tx: tx.clone(),
-            me: self.me.clone(),
+
+        let mut state = ClientImpl {
+            room,
+            me: me.clone(),
+            my_id,
+            tx: CommandSender { tx: tx.clone() },
         };
-        let mut state = ClientImpl { params: self, tx: tx.clone() };
         tokio::spawn(async move {
             while let Some(command) = rx.recv().await {
                 match command {
-                    Command::OnListen(text) => {
+                    Command::OnListen { text, resp_tx } => {
                         state.on_listen(text);
+                        resp_tx.send(()).unwrap()
                     }
-                    Command::Send { body } => {
+                    Command::Send { body, resp_tx } => {
                         sink.send(Message::Text(body)).await.unwrap();
+                        resp_tx.send(()).unwrap()
                     }
-                    Command::Leave => state.leave(),
-                    Command::Close => state.close(),
+                    Command::Leave { resp_tx } => {
+                        state.leave();
+                        resp_tx.send(()).unwrap()
+                    }
+                    Command::Close { resp_tx } => {
+                        state.close();
+                        resp_tx.send(()).unwrap()
+                    }
                 }
             }
         });
-        let tx2 = tx;
+        let sender = CommandSender { tx: tx.clone() };
         tokio::spawn(async move {
             while let Some(message) = stream.next().await {
                 match message {
                     Err(_) => break,
                     Ok(message) => match message {
-                        Message::Text(text) => tx2.send(Command::OnListen(text)).await.unwrap(),
+                        Message::Text(text) => {
+                            sender.OnListen(text).await;
+                        }
                         Message::Binary(msg) => {
                             println!("Received binary message: {:02X?}", msg);
                         }
@@ -86,30 +84,34 @@ impl ClientParam {
                     }
                 }
             }
-            tx2.send(Command::Close).await.unwrap();
+            sender.Close().await;
         });
-        Ok(client)
+        Ok(ChatClient {
+            id: my_id,
+            tx: CommandSender { tx },
+            me,
+        })
+    }
+
+    pub fn spawn_send(&self, body: String) {
+        let sender = self.tx.clone();
+        tokio::spawn(async move {
+            sender.Send(body).await;
+        });
     }
 }
 
-impl ChatClient {
-    pub fn send(&self, body: String) {
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            tx.send(Command::Send { body }).await.unwrap();
-        });
-    }
-
-    pub fn leave(&self) {
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            tx.send(Command::Leave).await.unwrap();
-        });
-    }
-
-    pub async fn close(&self) {
-        self.tx.send(Command::Close).await.unwrap();
-    }
+pub struct ClientImpl {
+    room: ChatRoom,
+    me: Participant,
+    my_id: usize,
+    tx: CommandSender,
+}
+command! {
+    OnListen(text: String),
+    pub Close(),
+    pub Send(body: String),
+    pub Leave(),
 }
 
 impl ClientImpl {
@@ -140,16 +142,16 @@ impl ClientImpl {
         // }
         match request {
             TextRoomRequest::Announcement { secret, r#type, text, transaction, .. } => {
-                if self.params.room.secret == secret {
-                    self.announcement(r#type, text);
+                if self.room.secret == secret {
+                    self.room.tx.spawn().Announcement(self.me.clone(), r#type, text);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
                 }
             }
             TextRoomRequest::Ban { secret, username, transaction } => {
-                if self.params.room.secret == secret {
-                    self.ban(username);
+                if self.room.secret == secret {
+                    self.room.tx.spawn().Ban(self.me.username.clone(), username);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
@@ -168,36 +170,21 @@ impl ClientImpl {
     fn send(&self, body: String) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            tx.send(Command::Send { body }).await.unwrap();
-        });
-    }
-
-    fn announcement(&self, r#type: String, text: String) {
-        let room = self.params.room.clone();
-        let me = self.params.me.clone();
-        tokio::spawn(async move {
-            room.tx.Announcement(me, r#type, text).await;
-        });
-    }
-
-    fn ban(&self, username: String) {
-        let room = self.params.room.clone();
-        let me = self.params.me.username.clone();
-        tokio::spawn(async move {
-            room.tx.Ban(me, username).await;
+            tx.Send(body).await;
         });
     }
 
     fn leave(&self) {
         self.detach();
-        let room = self.params.room.clone();
-        let event = TextRoomEvent::Left {
-            username: self.params.me.username.clone(),
-            display: self.params.me.display.clone(),
-            participants: 0, // FIXME
-        };
+        let room = self.room.clone();
+        let me = self.me.clone();
         tokio::spawn(async move {
-            room.broadcast(event).await
+            let event = TextRoomEvent::Left {
+                username: me.username.clone(),
+                display: me.display.clone(),
+                participants: room.tx.Count().await,
+            };
+            room.broadcast(event).await;
         });
     }
     fn close(&mut self) {
@@ -206,7 +193,7 @@ impl ClientImpl {
     }
 
     fn detach(&self) {
-        println!("`{:?}` left", self.params.me.display);
-        self.params.room.remove(self.params.id);
+        println!("`{:?}` left", self.me.display);
+        self.room.tx.spawn().RemoveClient(self.my_id);
     }
 }
