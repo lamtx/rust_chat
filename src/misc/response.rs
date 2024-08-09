@@ -1,7 +1,6 @@
 use hyper::{Body, Response, StatusCode};
 use hyper::header::CONTENT_TYPE;
-use serde::Serialize;
-use serde_json::json;
+
 use crate::misc::HttpResponse;
 
 pub fn ok_response() -> HttpResponse {

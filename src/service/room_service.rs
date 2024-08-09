@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::Arc;
+use hyper::{Client, StatusCode};
 use chrono::Utc;
+use hyper::{Body, Request};
 use serde::Serialize;
 use tokio::sync::mpsc::channel;
 
 use crate::{command, error};
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, RoomInfo, TextRoomEvent};
-use crate::service::client_service::{ChatClient};
+use crate::service::client_service::ChatClient;
 use crate::service::Room;
 
 command! {
@@ -22,21 +26,22 @@ command! {
     pub Participants() -> Vec<Participant>,
     /// Return the serialized json of all [Message] in this room.
     pub Messages() -> String,
+    pub SendMessage(sender: Participant, r#type: String, text: String),
     pub Destroy(),
 }
 
 #[derive(Clone)]
 pub struct ChatRoom {
-    pub secret: String,
-    pub tx: CommandSender,
+    pub secret: Arc<String>,
+    pub send: CommandSender,
 }
 
 impl ChatRoom {
     pub fn create(room: Room) -> ChatRoom {
         let (tx, mut rx) = channel::<Command>(30);
         let chat_room = ChatRoom {
-            tx: CommandSender { tx },
-            secret: room.secret.clone(),
+            send: CommandSender { tx },
+            secret: Arc::new(room.secret.clone()),
         };
         tokio::spawn(async move {
             let mut state = ChatRoomInner {
@@ -61,7 +66,11 @@ impl ChatRoom {
                         resp_tx.send(()).unwrap();
                     }
                     Command::Announcement { sender, r#type, text, resp_tx } => {
-                        state.announcement(sender, r#type, text);
+                        state.announce(sender, r#type, text);
+                        resp_tx.send(()).unwrap();
+                    }
+                    Command::SendMessage { sender, r#type, text, resp_tx } => {
+                        state.send_message(sender, r#type, text);
                         resp_tx.send(()).unwrap();
                     }
                     Command::Ban { from, victim, resp_tx } => {
@@ -108,14 +117,14 @@ impl ChatRoom {
                 .to_bad_request()?;
             let this = self.clone();
             tokio::spawn(async move {
-                let id = this.tx.GetNextId().await;
+                let id = this.send.GetNextId().await;
                 let me = Participant {
                     username: params.username,
                     display: params.display,
                 };
                 let client = ChatClient::create(websocket, this.clone(), me, id).await;
                 if let Ok(client) = client {
-                    this.tx.AddClient(client).await;
+                    this.send.AddClient(client).await;
                 } else {
                     panic!("unable to create client?")
                 }
@@ -125,11 +134,6 @@ impl ChatRoom {
         } else {
             error!("The request is not upgradable to web socket.".to_string())
         }
-    }
-    
-    pub async fn broadcast(&self, event: TextRoomEvent) {
-        let message = serde_json::to_string(&event).unwrap();
-        self.tx.Broadcast(message).await
     }
 }
 
@@ -144,7 +148,7 @@ struct ChatRoomInner {
 impl ChatRoomInner {
     fn status(&self) -> RoomInfo {
         RoomInfo {
-            room: self.room.uid.to_string(),
+            room: self.room.uid.clone(),
             participants: self.clients
                 .iter().map(|e| e.me.clone())
                 .collect(),
@@ -174,7 +178,32 @@ impl ChatRoomInner {
         result
     }
 
-    fn announcement(&mut self, sender: Participant, r#type: String, text: String) {
+    fn send_message(&mut self, sender: Participant, r#type: String, text: String) {
+        if sender.username.is_none() {
+            return;
+        }
+        let now = Utc::now();
+
+        let message = Message {
+            room: self.room.name().to_string(),
+            textroom: Message::MESSAGE.to_string(),
+            r#type: r#type.clone(),
+            text: text.clone(),
+            date: now.clone(),
+            from: sender.username.clone().unwrap(),
+        };
+        self.post(&message, true);
+        self.messages.push(message);
+        let event = &TextRoomEvent::Message {
+            from: sender.username.unwrap(),
+            display: sender.display.unwrap(),
+            date: now,
+            text,
+            r#type,
+        };
+        self.broadcast_json(&event);
+    }
+    fn announce(&mut self, sender: Participant, r#type: String, text: String) {
         let now = Utc::now();
         let message = Message {
             room: self.room.name().to_string(),
@@ -184,8 +213,8 @@ impl ChatRoomInner {
             date: now.clone(),
             from: sender.username.unwrap(),
         };
-        self.messages.push(message.clone());
-        self.post(&message, Some(&r#type));
+        self.post(&message, true);
+        self.messages.push(message);
         let event = TextRoomEvent::Announcement { date: now, text, r#type };
         self.broadcast_json(&event);
     }
@@ -197,8 +226,8 @@ impl ChatRoomInner {
         );
         let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
         for client in victims {
-            client.tx.Send(event.clone());
-            client.tx.Leave();
+            client.tx.spawn().Send(event.clone());
+            client.tx.spawn().Leave();
         }
         self.post(&Message {
             textroom: Message::MODERATE.to_string(),
@@ -207,14 +236,42 @@ impl ChatRoomInner {
             text: victim,
             date: Utc::now(),
             from: from.unwrap_or_default(),
-        }, None);
+        }, false);
     }
 
-    fn post(&mut self, message: &Message, r#type: Option<&str>) {
-        // FIXME
+    fn post(&mut self, message: &Message, should_check_type: bool) {
+        if self.room.post.is_none() {
+            return;
+        }
+        if should_check_type && !self.room.post_types.contains(&message.r#type) {
+            return;
+        }
+        println!("post to {}", self.room.post.as_ref().unwrap());
+        let request = Request::builder()
+            .uri(self.room.post.as_ref().unwrap())
+            .method("POST")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(message).unwrap()))
+            .unwrap();
+        let client = Client::new();
+        tokio::spawn(async move {
+            let response = client.request(request).await;
+            match response {
+                Ok(resp) => {
+                    if resp.status() == StatusCode::OK {
+                        println!("post complete");
+                    } else {
+                        println!("post failed with status code {}", resp.status());
+                    }
+                }
+                Err(e) => {
+                    println!("post failed with error {:?}", e);
+                }
+            }
+        });
     }
 
-    async fn broadcast_json<T: Serialize>(&self, body: &T) {
+    fn broadcast_json<T: Serialize>(&self, body: &T) {
         let content = serde_json::to_string(body).unwrap();
         self.broadcast(content)
     }
@@ -244,6 +301,6 @@ impl ChatRoomInner {
     }
     fn destroy(&mut self) {
         self.detach();
-        self.post(&Message::room_destroyed(self.room.name().to_string()), None)
+        self.post(&Message::room_destroyed(self.room.name().to_string()), false)
     }
 }

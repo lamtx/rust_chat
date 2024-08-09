@@ -3,6 +3,7 @@ use std::ops::Deref;
 use hyper::{Body, Response};
 use routerify::RequestInfo;
 use serde_json::json;
+
 use crate::json_response;
 use crate::misc::{
     AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt,
@@ -84,8 +85,8 @@ async fn room_action(req: HttpRequest, room: String, action: String) -> AppResul
         }
         "destroy" => {
             let params = DestroyParams::parse_uri(req.uri())?;
-            if params.secret == chat_room.secret {
-                chat_room.tx.spawn().Destroy();
+            if &params.secret == chat_room.secret.deref() {
+                chat_room.send.spawn().Destroy();
                 Ok(ok_response())
             } else {
                 Err(AppError::secret())
@@ -93,23 +94,23 @@ async fn room_action(req: HttpRequest, room: String, action: String) -> AppResul
         }
         "count" => {
             Ok(json_response!({
-                "count": chat_room.tx.Count().await,
+                "count": chat_room.send.Count().await,
             }))
         }
         "status" => {
-            Ok(json_response!(chat_room.tx.Status().await))
+            Ok(json_response!(chat_room.send.Status().await))
         }
         "lastAnnouncement" => {
             let params = LastAnnouncementParams::parse_uri(req.uri())?;
-            let announcements = chat_room.tx.LastAnnouncement(params.types).await;
+            let announcements = chat_room.send.LastAnnouncement(params.types).await;
             Ok(json_response!(announcements))
         }
         "participants" => {
-            let participants = chat_room.tx.Participants().await;
+            let participants = chat_room.send.Participants().await;
             Ok(json_response!(participants))
         }
         "messages" => {
-            let messages = chat_room.tx.Messages().await;
+            let messages = chat_room.send.Messages().await;
             Ok(json_response(messages))
         }
         _ => not_found()

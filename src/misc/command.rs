@@ -38,11 +38,12 @@ macro_rules! command {
         impl SpawnCommandSender {
         $(
             $vis fn $name (self, $($param: $input,)*) {
-                let (resp_tx, _) = tokio::sync::oneshot::channel();
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                 let data = Command::$name{$($param,)* resp_tx};
                 let tx = self.tx;
                 tokio::spawn(async move{
                     tx.send(data).await.unwrap();
+                    let _ = resp_rx.await.unwrap();
                 });
             }
         )+

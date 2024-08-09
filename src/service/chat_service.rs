@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use tokio::sync::{mpsc};
+use tokio::sync::mpsc;
 
 use crate::{command, error};
 use crate::misc::{AppResult, not_found};
-use crate::model::{RoomInfo};
+use crate::model::RoomInfo;
 use crate::service::{ChatRoom, Room};
 
 command! {
@@ -56,7 +56,7 @@ impl ChatServiceInner {
     async fn status(&self) -> Vec<RoomInfo> {
         let mut result = Vec::new();
         for e in self.rooms.values() {
-            result.push(e.tx.Status().await)
+            result.push(e.send.Status().await)
         }
         result
     }

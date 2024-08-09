@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+
 use hyper::StatusCode;
 use serde::Serialize;
 

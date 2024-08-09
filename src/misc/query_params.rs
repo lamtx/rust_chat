@@ -1,5 +1,6 @@
 use hyper::Uri;
 use querystring::{querify, QueryParam};
+use urlencoding::decode;
 
 use crate::misc::{AppResult, error};
 
@@ -18,7 +19,7 @@ impl<'a> QueryParams<'a> {
     pub fn get(&self, name: &str) -> Option<String> {
         self.vec.iter()
             .find(|(key, _)| key == &name)
-            .map(|(_, value)| String::from(*value))
+            .map(|(_, value)| decode_url(value))
     }
 
     pub fn require(&self, name: &str) -> AppResult<String> {
@@ -33,9 +34,14 @@ impl<'a> QueryParams<'a> {
             .find(|(key, _)| key == &name);
         match value {
             None => const { Vec::new() }
-            Some((_, a)) => a.split(',').map(|e| String::from(e)).collect()
+            Some((_, a)) => a.split(',').map(|e| decode_url(e)).collect()
         }
     }
+}
+
+#[inline]
+fn decode_url(value: &str) -> String {
+    decode(value).unwrap().into_owned()
 }
 
 pub trait Params {
