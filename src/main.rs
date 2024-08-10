@@ -1,9 +1,14 @@
 use std::net::SocketAddr;
+use std::ops::Deref;
+use std::sync::Arc;
 
-use hyper::Server;
-use routerify::{Router, RouterService};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
 
-use crate::app::handlers;
+use crate::app::handlers::default_handler;
+use crate::config::PORT;
 use crate::misc::*;
 use crate::service::ChatService;
 
@@ -12,27 +17,32 @@ mod misc;
 #[macro_use]
 mod app;
 mod service;
+mod config;
 
 #[tokio::main]
 async fn main() {
-    let router = Router::builder()
-        .data(ChatService::create())
-        .any(handlers::default_handler)
-        .err_handler_with_info(handlers::error_handler)
-        .build()
-        .unwrap();
-
-    // Create a Service from the router above to handle incoming requests.
-    let service = RouterService::new(router).unwrap();
-
-    // The address on which the server will be listening.
-    let addr = SocketAddr::from(([127, 0, 0, 1], 9339));
-
-    // Create a server by passing the created service to `.serve` method.
-    let server = Server::bind(&addr).serve(service);
-
+    let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let listener = TcpListener::bind(addr).await.unwrap();
     println!("App is running on: {addr}");
-    if let Err(err) = server.await {
-        eprintln!("Server error: {err}");
+
+    let global_state = Arc::new(ChatService::create());
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+
+        // Use an adapter to access something implementing `tokio::io` traits as if they implement
+        // `hyper::rt` IO traits.
+        let io = TokioIo::new(stream);
+        let service = global_state.clone();
+        // Spawn a tokio task to serve multiple connections concurrently
+        tokio::spawn(async move {
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, service_fn(|req| default_handler(&service, req)))
+                // Support WS upgradable protocol
+                .with_upgrades()
+                .await
+            {
+                eprintln!("Error serving connection: {:?}", err);
+            }
+        });
     }
 }

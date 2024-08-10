@@ -2,12 +2,11 @@ use std::ops::Deref;
 
 use futures::{sink::SinkExt, stream::StreamExt};
 use hyper_tungstenite::HyperWebsocket;
-use hyper_tungstenite::tungstenite::Message;
+use hyper_tungstenite::tungstenite::{Error, Message};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::command;
-use crate::misc::{AppResult, ToBadRequest};
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
 
@@ -24,8 +23,8 @@ impl ChatClient {
         room: ChatRoom,
         me: Participant,
         my_id: usize,
-    ) -> AppResult<ChatClient> {
-        let (mut sink, mut stream) = socket.await.to_bad_request()?.split();
+    ) -> Result<ChatClient, Error> {
+        let (mut sink, mut stream) = socket.await?.split();
         let (tx, mut rx) = mpsc::channel::<Command>(30);
 
         let mut state = ClientImpl {
@@ -91,6 +90,7 @@ impl ChatClient {
             }
             sender.Close().await;
         });
+
         Ok(ChatClient {
             id: my_id,
             tx: CommandSender { tx },

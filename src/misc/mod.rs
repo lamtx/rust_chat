@@ -1,6 +1,8 @@
 use std::string::ToString;
 
-use hyper::StatusCode;
+use http_body_util::Full;
+use hyper::{Request, Response, StatusCode};
+use hyper::body::{Bytes, Incoming};
 
 pub use app_error::{AppError, ToBadRequest};
 pub use option_ext::OptionExt;
@@ -19,9 +21,9 @@ mod command;
 
 pub type AppResult<T> = Result<T, AppError>;
 
-pub type HttpRequest = hyper::http::Request<hyper::body::Body>;
+pub type HttpRequest = Request<Incoming>;
 
-pub type HttpResponse = hyper::http::Response<hyper::body::Body>;
+pub type HttpResponse = Response<Full<Bytes>>;
 
 #[inline]
 pub fn error<T>(message: String) -> AppResult<T> {

@@ -1,22 +1,38 @@
+use std::convert::Infallible;
 use std::ops::Deref;
 
-use hyper::{Body, Response};
-use routerify::RequestInfo;
+use http_body_util::Full;
+use hyper::Response;
 use serde_json::json;
 
 use crate::json_response;
-use crate::misc::{
-    AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt,
-};
+use crate::misc::{AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt, ToBadRequest};
 use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams};
 use crate::service::{ChatService, Room};
 
-pub async fn default_handler(req: HttpRequest) -> AppResult<HttpResponse> {
+pub async fn default_handler(service: &ChatService, req: HttpRequest) -> Result<HttpResponse, Infallible> {
+    match handle_request(service, req).await {
+        Ok(res) => Ok(res),
+        Err(error) => {
+            let status_code = error.code;
+            let json = serde_json::to_string(&error).unwrap();
+            #[cfg(debug_assertions)]
+            println!("Error {status_code}: {json}");
+            Ok(Response::builder()
+                .status(status_code)
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(Full::new(json.into()))
+                .unwrap())
+        }
+    }
+}
+
+pub async fn handle_request(service: &ChatService, req: HttpRequest) -> AppResult<HttpResponse> {
     let uri = req.uri();
     let action = uri.path().substring_after_last('/').to_string();
     let room = uri.path().substring_before_last('/').to_string();
     #[cfg(debug_assertions)]
-    println!("handle: {uri}");
+    println!("{}: {uri}", req.method());
     match action.as_str() {
         "" => not_found(),
         "create" => {
@@ -24,42 +40,30 @@ pub async fn default_handler(req: HttpRequest) -> AppResult<HttpResponse> {
                 not_found()
             } else {
                 let params = Params::parse_uri(uri)?;
-                create_room(req, room, params).await
+                create_room(service, req, room, params).await
             }
         }
         "status" => {
             if room.is_empty() {
-                dump_status(req).await
+                dump_status(service, req).await
             } else {
-                room_action(req, room, action).await
+                room_action(service, req, room, action).await
             }
         }
         &_ => {
-            room_action(req, room, action).await
+            room_action(service, req, room, action).await
         }
     }
 }
 
-pub async fn error_handler(err: routerify::RouteError, _: RequestInfo) -> HttpResponse {
-    let error = err.downcast::<AppError>().unwrap();
-    let status_code = error.code;
-    let json = serde_json::to_string(error.deref()).unwrap();
-    #[cfg(debug_assertions)]
-    println!("Error {status_code}: {json}");
-    Response::builder()
-        .status(status_code)
-        .body(Body::from(json))
-        .unwrap()
-}
-
-fn app(req: &HttpRequest) -> &ChatService {
-    use routerify::prelude::RequestExt;
-    req.data::<ChatService>().unwrap()
-}
-
 /// matches /path/to/room/create
-async fn create_room(req: HttpRequest, room: String, params: CreateParams) -> AppResult<HttpResponse> {
-    app(&req).tx.CreateRoom(Room {
+async fn create_room(
+    service: &ChatService,
+    _: HttpRequest,
+    room: String,
+    params: CreateParams,
+) -> AppResult<HttpResponse> {
+    service.tx.CreateRoom(Room {
         uid: room,
         secret: params.secret,
         post: params.post,
@@ -69,19 +73,24 @@ async fn create_room(req: HttpRequest, room: String, params: CreateParams) -> Ap
 }
 
 /// matches /status
-async fn dump_status(req: HttpRequest) -> AppResult<HttpResponse> {
-    let status = app(&req).tx.Status().await;
+async fn dump_status(service: &ChatService, _: HttpRequest) -> AppResult<HttpResponse> {
+    let status = service.tx.Status().await;
     Ok(json_response!(status))
 }
 
 /// matches /path/to/room/action
-async fn room_action(req: HttpRequest, room: String, action: String) -> AppResult<HttpResponse> {
-    let chat_room = app(&req).tx.GetRoom(room).await?;
+async fn room_action(
+    service: &ChatService,
+    req: HttpRequest,
+    room: String,
+    action: String,
+) -> AppResult<HttpResponse> {
+    let chat_room = service.tx.GetRoom(room).await?;
 
     match action.as_str() {
         "join" => {
             let params = JoinParams::parse_uri(req.uri())?;
-            chat_room.join(req, params).await
+            chat_room.join(req, params).await.to_bad_request()
         }
         "destroy" => {
             let params = DestroyParams::parse_uri(req.uri())?;

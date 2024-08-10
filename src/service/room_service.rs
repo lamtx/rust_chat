@@ -1,13 +1,15 @@
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::Arc;
-use hyper::{Client, StatusCode};
+
 use chrono::Utc;
-use hyper::{Body, Request};
+use hyper::{Request, StatusCode};
+use hyper_tungstenite::tungstenite::error::ProtocolError;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use serde::Serialize;
 use tokio::sync::mpsc::channel;
 
-use crate::{command, error};
+use crate::command;
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, RoomInfo, TextRoomEvent};
 use crate::service::client_service::ChatClient;
@@ -51,6 +53,7 @@ impl ChatRoom {
                 next_id: 0,
                 detached: false,
             };
+            println!("`room {}` created", &state.room.uid);
             while let Some(command) = rx.recv().await {
                 match command {
                     Command::Status { resp_tx } => {
@@ -110,29 +113,33 @@ impl ChatRoom {
         chat_room
     }
 
-    pub async fn join(&self, req: HttpRequest, params: JoinParams) -> AppResult<HttpResponse> {
+    pub async fn join(&self, mut req: HttpRequest, params: JoinParams) -> Result<HttpResponse, ProtocolError> {
         use hyper_tungstenite::*;
         if is_upgrade_request(&req) {
-            let (response, websocket) = upgrade(req, None)
-                .to_bad_request()?;
+            println!("{} is joining", params.display.as_ref().unwrap());
+            let (response, websocket) = upgrade(&mut req, None)?;
             let this = self.clone();
+            let id = this.send.GetNextId().await;
+            let me = Participant {
+                username: params.username,
+                display: params.display,
+            };
             tokio::spawn(async move {
-                let id = this.send.GetNextId().await;
-                let me = Participant {
-                    username: params.username,
-                    display: params.display,
-                };
                 let client = ChatClient::create(websocket, this.clone(), me, id).await;
-                if let Ok(client) = client {
-                    this.send.AddClient(client).await;
-                } else {
-                    panic!("unable to create client?")
+                match client {
+                    Ok(client) => {
+                        this.send.AddClient(client).await;
+                    }
+                    Err(e) => {
+                        println!("unable to create client: {:?}", e);
+                    }
                 }
             });
-            // Return the response so the spawned future can continue.
             Ok(response)
         } else {
-            error!("The request is not upgradable to web socket.".to_string())
+            println!("The request is not upgradable to web socket");
+            Err(ProtocolError::MissingConnectionUpgradeHeader)
+            // Or MissingUpgradeWebSocketHeader but it's not importance
         }
     }
 }
@@ -251,21 +258,22 @@ impl ChatRoomInner {
             .uri(self.room.post.as_ref().unwrap())
             .method("POST")
             .header("Content-Type", "application/json")
-            .body(Body::from(serde_json::to_string(message).unwrap()))
+            .body(serde_json::to_string(message).unwrap())
             .unwrap();
-        let client = Client::new();
+        let client = Client::builder(TokioExecutor::new()).build_http();
         tokio::spawn(async move {
-            let response = client.request(request).await;
-            match response {
-                Ok(resp) => {
-                    if resp.status() == StatusCode::OK {
-                        println!("post complete");
+            match client.request(request).await {
+                Ok(response) => {
+                    if response.status() == StatusCode::OK {
+                        println!("posted ok");
+                        println!("{:?}", response.into_body());
                     } else {
-                        println!("post failed with status code {}", resp.status());
+                        println!("posted failed {}", response.status());
+                        println!("{:?}", response.into_body());
                     }
                 }
                 Err(e) => {
-                    println!("post failed with error {:?}", e);
+                    println!("posted error {:?}", e);
                 }
             }
         });
