@@ -14,7 +14,7 @@ use crate::service::ChatRoom;
 pub struct ChatClient {
     pub id: usize,
     pub me: Participant,
-    pub tx: CommandSender,
+    pub op: CommandSender,
 }
 
 impl ChatClient {
@@ -31,7 +31,7 @@ impl ChatClient {
             room,
             me: me.clone(),
             my_id,
-            tx: CommandSender { tx: tx.clone() },
+            op: CommandSender { tx: tx.clone() },
         };
         // command listener
         tokio::spawn(async move {
@@ -93,13 +93,13 @@ impl ChatClient {
 
         Ok(ChatClient {
             id: my_id,
-            tx: CommandSender { tx },
+            op: CommandSender { tx },
             me,
         })
     }
 
     pub fn spawn_send(&self, body: String) {
-        let sender = self.tx.clone();
+        let sender = self.op.clone();
         tokio::spawn(async move {
             sender.Send(body).await;
         });
@@ -110,8 +110,9 @@ pub struct ClientImpl {
     room: ChatRoom,
     me: Participant,
     my_id: usize,
-    tx: CommandSender,
+    op: CommandSender,
 }
+
 command! {
     OnListen(text: String),
     pub Close(),
@@ -152,12 +153,12 @@ impl ClientImpl {
         println!("handling: {:?}", &request);
         match request {
             TextRoomRequest::Message { r#type, text, .. } => {
-                self.room.send.spawn().SendMessage(self.me.clone(), r#type, text);
+                self.room.op.spawn().SendMessage(self.me.clone(), r#type, text);
                 None
             }
             TextRoomRequest::Announcement { secret, r#type, text, transaction, .. } => {
                 if self.room.secret.deref() == &secret {
-                    self.room.send.spawn().Announcement(self.me.clone(), r#type, text);
+                    self.room.op.spawn().Announcement(self.me.clone(), r#type, text);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
@@ -169,7 +170,7 @@ impl ClientImpl {
             }
             TextRoomRequest::Ban { secret, username, transaction } => {
                 if self.room.secret.deref() == &secret {
-                    self.room.send.spawn().Ban(self.me.username.clone(), username);
+                    self.room.op.spawn().Ban(self.me.username.clone(), username);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
@@ -180,7 +181,7 @@ impl ClientImpl {
     }
 
     fn send(&self, body: String) {
-        let tx = self.tx.clone();
+        let tx = self.op.clone();
         tokio::spawn(async move {
             tx.Send(body).await;
         });
@@ -188,12 +189,12 @@ impl ClientImpl {
 
     fn leave(&self) {
         self.detach();
-        let room = self.room.send.clone();
+        let room = self.room.op.clone();
         let me = self.me.clone();
         tokio::spawn(async move {
             let event = TextRoomEvent::Left {
-                username: me.username.clone(),
-                display: me.display.clone(),
+                username: me.username,
+                display: me.display,
                 participants: room.Count().await,
             };
             room.Broadcast(serde_json::to_string(&event).unwrap()).await;
@@ -206,7 +207,7 @@ impl ClientImpl {
 
     fn detach(&self) {
         println!("`{:?}` left", self.me.display);
-        self.room.send.spawn().RemoveClient(self.my_id);
+        self.room.op.spawn().RemoveClient(self.my_id);
     }
 }
 

@@ -63,7 +63,7 @@ async fn create_room(
     room: String,
     params: CreateParams,
 ) -> AppResult<HttpResponse> {
-    service.tx.CreateRoom(Room {
+    service.op.CreateRoom(Room {
         uid: room,
         secret: params.secret,
         post: params.post,
@@ -74,7 +74,7 @@ async fn create_room(
 
 /// matches /status
 async fn dump_status(service: &ChatService, _: HttpRequest) -> AppResult<HttpResponse> {
-    let status = service.tx.Status().await;
+    let status = service.op.Status().await;
     Ok(json_response!(status))
 }
 
@@ -85,7 +85,7 @@ async fn room_action(
     room: String,
     action: String,
 ) -> AppResult<HttpResponse> {
-    let chat_room = service.tx.GetRoom(room).await?;
+    let chat_room = service.op.GetRoom(room).await?;
 
     match action.as_str() {
         "join" => {
@@ -95,7 +95,7 @@ async fn room_action(
         "destroy" => {
             let params = DestroyParams::parse_uri(req.uri())?;
             if &params.secret == chat_room.secret.deref() {
-                chat_room.send.spawn().Destroy();
+                chat_room.op.spawn().Destroy();
                 Ok(ok_response())
             } else {
                 Err(AppError::secret())
@@ -107,19 +107,19 @@ async fn room_action(
             }))
         }
         "status" => {
-            Ok(json_response!(chat_room.send.Status().await))
+            Ok(json_response!(chat_room.op.Status().await))
         }
         "lastAnnouncement" => {
             let params = LastAnnouncementParams::parse_uri(req.uri())?;
-            let announcements = chat_room.send.LastAnnouncement(params.types).await;
+            let announcements = chat_room.op.LastAnnouncement(params.types).await;
             Ok(json_response!(announcements))
         }
         "participants" => {
-            let participants = chat_room.send.Participants().await;
+            let participants = chat_room.op.Participants().await;
             Ok(json_response!(participants))
         }
         "messages" => {
-            let messages = chat_room.send.Messages().await;
+            let messages = chat_room.op.Messages().await;
             Ok(json_response(messages))
         }
         _ => not_found()

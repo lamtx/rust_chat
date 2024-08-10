@@ -17,4 +17,5 @@ querystring = "1.1.0"
 hyper-tungstenite = "0.14.0"
 urlencoding = "2.1.3"
 futures = "0.3.30"
+hyper-tls = "0.6.0"
 

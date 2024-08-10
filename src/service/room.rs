@@ -1,6 +1,5 @@
 use crate::misc::StringExt;
 
-#[derive(Default)]
 pub struct Room {
     pub uid: String,
     pub secret: String,

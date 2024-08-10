@@ -35,14 +35,14 @@ command! {
 #[derive(Clone)]
 pub struct ChatRoom {
     pub secret: Arc<String>,
-    pub send: CommandSender,
+    pub op: CommandSender,
 }
 
 impl ChatRoom {
     pub fn create(room: Room) -> ChatRoom {
         let (tx, mut rx) = channel::<Command>(30);
         let chat_room = ChatRoom {
-            send: CommandSender { tx },
+            op: CommandSender { tx },
             secret: Arc::new(room.secret.clone()),
         };
         tokio::spawn(async move {
@@ -119,7 +119,7 @@ impl ChatRoom {
             println!("{} is joining", params.display.as_ref().unwrap());
             let (response, websocket) = upgrade(&mut req, None)?;
             let this = self.clone();
-            let id = this.send.GetNextId().await;
+            let id = this.op.GetNextId().await;
             let me = Participant {
                 username: params.username,
                 display: params.display,
@@ -128,7 +128,7 @@ impl ChatRoom {
                 let client = ChatClient::create(websocket, this.clone(), me, id).await;
                 match client {
                     Ok(client) => {
-                        this.send.AddClient(client).await;
+                        this.op.AddClient(client).await;
                     }
                     Err(e) => {
                         println!("unable to create client: {:?}", e);
@@ -226,15 +226,15 @@ impl ChatRoomInner {
         self.broadcast_json(&event);
     }
 
-    fn ban(&mut self, from: Option<String>, victim: String) {
+    fn ban(&self, from: Option<String>, victim: String) {
         println!("{:?} wants to ban {victim}", from);
         let victims = self.clients.iter().filter(
             |&e| e.me.username.contains(&victim)
         );
         let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
         for client in victims {
-            client.tx.spawn().Send(event.clone());
-            client.tx.spawn().Leave();
+            client.op.spawn().Send(event.clone());
+            client.op.spawn().Leave();
         }
         self.post(&Message {
             textroom: Message::MODERATE.to_string(),
@@ -246,7 +246,7 @@ impl ChatRoomInner {
         }, false);
     }
 
-    fn post(&mut self, message: &Message, should_check_type: bool) {
+    fn post(&self, message: &Message, should_check_type: bool) {
         if self.room.post.is_none() {
             return;
         }
@@ -291,7 +291,7 @@ impl ChatRoomInner {
 
     async fn close(&mut self) {
         for client in &self.clients {
-            client.tx.Close().await;
+            client.op.Close().await;
         }
         self.clients.clear();
         self.detach();

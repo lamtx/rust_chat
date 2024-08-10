@@ -14,13 +14,13 @@ command! {
 }
 
 pub struct ChatService {
-    pub tx: CommandSender,
+    pub op: CommandSender,
 }
 
 impl ChatService {
     pub fn create() -> ChatService {
         let (tx, mut rx) = mpsc::channel::<Command>(30);
-        let app = ChatService { tx: CommandSender { tx } };
+        let app = ChatService { op: CommandSender { tx } };
         tokio::spawn(async move {
             use Command::*;
             let mut app_state = ChatServiceInner::default();
@@ -56,7 +56,7 @@ impl ChatServiceInner {
     async fn status(&self) -> Vec<RoomInfo> {
         let mut result = Vec::new();
         for e in self.rooms.values() {
-            result.push(e.send.Status().await)
+            result.push(e.op.Status().await)
         }
         result
     }
