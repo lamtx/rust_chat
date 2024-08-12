@@ -1,16 +1,17 @@
 use std::ops::Deref;
 
 use futures::{sink::SinkExt, stream::StreamExt};
-use hyper_tungstenite::HyperWebsocket;
+use futures::stream::SplitSink;
+use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
 use hyper_tungstenite::tungstenite::{Error, Message};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::command;
+use crate::misc::OrEmpty;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
 
-#[derive(Clone)]
 pub struct ChatClient {
     pub id: usize,
     pub me: Participant,
@@ -24,53 +25,67 @@ impl ChatClient {
         me: Participant,
         my_id: usize,
     ) -> Result<ChatClient, Error> {
-        let (mut sink, mut stream) = socket.await?.split();
+        let (sink, mut stream) = socket.await?.split();
         let (tx, mut rx) = mpsc::channel::<Command>(30);
-
         let mut state = ClientImpl {
             room,
             me: me.clone(),
             my_id,
-            op: CommandSender { tx: tx.clone() },
+            op: Some(CommandSender { tx: tx.clone() }), //loop here
+            is_detached: false,
+            is_socket_closed: false,
+            sink,
         };
+
         // command listener
         tokio::spawn(async move {
             while let Some(command) = rx.recv().await {
                 match command {
                     Command::OnListen { text, resp_tx } => {
                         state.on_listen(text);
+                        state.send(Message::Ping(vec![1])).await.unwrap();
                         resp_tx.send(()).unwrap()
                     }
-                    Command::Send { body, resp_tx } => {
-                        sink.send(Message::Text(body)).await.unwrap();
-                        resp_tx.send(()).unwrap()
+                    Command::Send { message, resp_tx } => {
+                        match state.send(message).await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("send ws failed: {:?}", e);
+                                state.close().await;
+                            }
+                        }
+                        resp_tx.send(()).unwrap();
                     }
                     Command::Leave { resp_tx } => {
                         state.leave();
                         resp_tx.send(()).unwrap()
                     }
                     Command::Close { resp_tx } => {
-                        state.close();
+                        state.close().await;
                         resp_tx.send(()).unwrap()
                     }
                 }
             }
         });
-        let sender = CommandSender { tx: tx.clone() };
         // listening to ws stream
+        let op = CommandSender { tx: tx.clone() };
         tokio::spawn(async move {
             while let Some(message) = stream.next().await {
                 match message {
-                    Err(_) => break,
+                    Err(e) => {
+                        println!("Socket error: {:?}", e);
+                        break;
+                    }
                     Ok(message) => match message {
                         Message::Text(text) => {
-                            sender.OnListen(text).await;
+                            op.OnListen(text).await;
                         }
                         Message::Binary(msg) => {
                             println!("Received binary message: {:02X?}", msg);
                         }
                         Message::Ping(msg) => {
                             println!("Received ping message: {:02X?}", msg);
+                            op.spawn().Send(Message::Pong(msg));
                         }
                         Message::Pong(msg) => {
                             println!("Received pong message: {:02X?}", msg);
@@ -88,7 +103,8 @@ impl ChatClient {
                     }
                 }
             }
-            sender.Close().await;
+            println!("web socket ended correctly");
+            op.Close().await;
         });
 
         Ok(ChatClient {
@@ -97,31 +113,27 @@ impl ChatClient {
             me,
         })
     }
-
-    pub fn spawn_send(&self, body: String) {
-        let sender = self.op.clone();
-        tokio::spawn(async move {
-            sender.Send(body).await;
-        });
-    }
 }
 
 pub struct ClientImpl {
     room: ChatRoom,
     me: Participant,
     my_id: usize,
-    op: CommandSender,
+    op: Option<CommandSender>,
+    sink: SplitSink<HyperWebsocketStream, Message>,
+    is_detached: bool,
+    is_socket_closed: bool,
 }
 
 command! {
-    OnListen(text: String),
-    pub Close(),
-    pub Send(body: String),
-    pub Leave(),
+    OnListen(text: String);
+    pub Close();
+    pub Send(message: Message);
+    pub Leave();
 }
 
 impl ClientImpl {
-    fn on_listen(&self, message: String) {
+    fn on_listen(&mut self, message: String) {
         println!("receive: {message}");
 
         let response = match serde_json::from_str(&message) {
@@ -141,15 +153,19 @@ impl ClientImpl {
         };
         if let Some(response) = response {
             println!("reply: {:?}", response);
-            self.send(serde_json::to_string(&response).unwrap());
+            match &self.op {
+                None => {}
+                Some(op) => {
+                    op.spawn().Send(Message::Text(serde_json::to_string(&response).unwrap()));
+                }
+            }
         }
     }
 
-    fn handle_request(&self, request: TextRoomRequest) -> Option<TextRoomResponse> {
-        // FIXME
-        // if (room.detached || _detached) {
-        //     return ErrorResponse.roomDestroyed(transaction);
-        // }
+    fn handle_request(&mut self, request: TextRoomRequest) -> Option<TextRoomResponse> {
+        if self.is_detached {
+            return Some(TextRoomResponse::destroyed(request.transaction()));
+        }
         println!("handling: {:?}", &request);
         match request {
             TextRoomRequest::Message { r#type, text, .. } => {
@@ -158,7 +174,7 @@ impl ClientImpl {
             }
             TextRoomRequest::Announcement { secret, r#type, text, transaction, .. } => {
                 if self.room.secret.deref() == &secret {
-                    self.room.op.spawn().Announcement(self.me.clone(), r#type, text);
+                    self.room.op.spawn().Announce(self.me.clone(), r#type, text);
                     None
                 } else {
                     Some(TextRoomResponse::secret(transaction))
@@ -176,38 +192,42 @@ impl ClientImpl {
                     Some(TextRoomResponse::secret(transaction))
                 }
             }
-            _ => None
         }
     }
 
-    fn send(&self, body: String) {
-        let tx = self.op.clone();
-        tokio::spawn(async move {
-            tx.Send(body).await;
-        });
+    async fn send(&mut self, message: Message) -> Result<(), Error> {
+        if self.is_socket_closed || self.is_detached {
+            return Ok(());
+        }
+        self.sink.send(message).await
     }
 
-    fn leave(&self) {
+    fn leave(&mut self) {
         self.detach();
         let room = self.room.op.clone();
         let me = self.me.clone();
         tokio::spawn(async move {
-            let event = TextRoomEvent::Left {
-                username: me.username,
-                display: me.display,
+            let event = &TextRoomEvent::Left {
+                username: me.username.as_deref(),
+                display: me.display.as_deref(),
                 participants: room.Count().await,
             };
-            room.Broadcast(serde_json::to_string(&event).unwrap()).await;
+            room.Broadcast(serde_json::to_string(event).unwrap()).await;
         });
     }
-    fn close(&mut self) {
+    async fn close(&mut self) {
         self.detach();
-        println!("closing")
+        self.is_socket_closed = true;
+        let _ = self.sink.close().await;
     }
 
-    fn detach(&self) {
-        println!("`{:?}` left", self.me.display);
-        self.room.op.spawn().RemoveClient(self.my_id);
+    fn detach(&mut self) {
+        if !self.is_detached {
+            self.is_detached = true;
+            self.op = None;
+            println!("`{}` left (id:{})", self.me.display.or_empty(), self.my_id);
+            self.room.op.spawn().RemoveClient(self.my_id);
+        }
     }
 }
 

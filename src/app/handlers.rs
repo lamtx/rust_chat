@@ -5,9 +5,11 @@ use http_body_util::Full;
 use hyper::Response;
 use serde_json::json;
 
+use crate::app::app_error::{AppError, ToBadRequest};
+use crate::app::common_errors::not_found;
 use crate::json_response;
-use crate::misc::{AppError, AppResult, HttpRequest, HttpResponse, not_found, ok_response, Params, StringExt, ToBadRequest};
-use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams};
+use crate::misc::{empty_body, HttpRequest, HttpResponse, ok_response, Params, StringExt};
+use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams, PhotoParams};
 use crate::service::{ChatService, Room};
 
 pub async fn default_handler(service: &ChatService, req: HttpRequest) -> Result<HttpResponse, Infallible> {
@@ -27,7 +29,7 @@ pub async fn default_handler(service: &ChatService, req: HttpRequest) -> Result<
     }
 }
 
-pub async fn handle_request(service: &ChatService, req: HttpRequest) -> AppResult<HttpResponse> {
+pub async fn handle_request(service: &ChatService, req: HttpRequest) -> Result<HttpResponse, AppError> {
     let uri = req.uri();
     let action = uri.path().substring_after_last('/').to_string();
     let room = uri.path().substring_before_last('/').to_string();
@@ -39,13 +41,13 @@ pub async fn handle_request(service: &ChatService, req: HttpRequest) -> AppResul
             if room.is_empty() {
                 not_found()
             } else {
-                let params = Params::parse_uri(uri)?;
+                let params = Params::parse_uri(uri).to_bad_request()?;
                 create_room(service, req, room, params).await
             }
         }
         "status" => {
             if room.is_empty() {
-                dump_status(service, req).await
+                Ok(dump_status(service, req).await)
             } else {
                 room_action(service, req, room, action).await
             }
@@ -62,20 +64,20 @@ async fn create_room(
     _: HttpRequest,
     room: String,
     params: CreateParams,
-) -> AppResult<HttpResponse> {
+) -> Result<HttpResponse, AppError> {
     service.op.CreateRoom(Room {
         uid: room,
         secret: params.secret,
         post: params.post,
         post_types: params.post_types,
-    }).await?;
+    }).await.to_bad_request()?;
     Ok(ok_response())
 }
 
 /// matches /status
-async fn dump_status(service: &ChatService, _: HttpRequest) -> AppResult<HttpResponse> {
+async fn dump_status(service: &ChatService, _: HttpRequest) -> HttpResponse {
     let status = service.op.Status().await;
-    Ok(json_response!(status))
+    json_response!(status)
 }
 
 /// matches /path/to/room/action
@@ -84,16 +86,16 @@ async fn room_action(
     req: HttpRequest,
     room: String,
     action: String,
-) -> AppResult<HttpResponse> {
-    let chat_room = service.op.GetRoom(room).await?;
+) -> Result<HttpResponse, AppError> {
+    let chat_room = service.op.GetRoom(room).await.to_bad_request()?;
 
     match action.as_str() {
         "join" => {
-            let params = JoinParams::parse_uri(req.uri())?;
+            let params = JoinParams::parse_uri(req.uri()).to_bad_request()?;
             chat_room.join(req, params).await.to_bad_request()
         }
         "destroy" => {
-            let params = DestroyParams::parse_uri(req.uri())?;
+            let params = DestroyParams::parse_uri(req.uri()).to_bad_request()?;
             if &params.secret == chat_room.secret.deref() {
                 chat_room.op.spawn().Destroy();
                 Ok(ok_response())
@@ -103,14 +105,14 @@ async fn room_action(
         }
         "count" => {
             Ok(json_response!({
-                "count": chat_room.send.Count().await,
+                "count": chat_room.op.Count().await,
             }))
         }
         "status" => {
             Ok(json_response!(chat_room.op.Status().await))
         }
         "lastAnnouncement" => {
-            let params = LastAnnouncementParams::parse_uri(req.uri())?;
+            let params = LastAnnouncementParams::parse_uri(req.uri()).to_bad_request()?;
             let announcements = chat_room.op.LastAnnouncement(params.types).await;
             Ok(json_response!(announcements))
         }
@@ -119,8 +121,22 @@ async fn room_action(
             Ok(json_response!(participants))
         }
         "messages" => {
-            let messages = chat_room.op.Messages().await;
+            let messages = chat_room.op.AllMessages().await;
             Ok(json_response(messages))
+        }
+        "photo" => {
+            let params = PhotoParams::parse_uri(req.uri()).to_bad_request()?;
+            let photo = chat_room.op.Photo(params.username).await;
+            match photo {
+                None => not_found(),
+                Some(url) => {
+                    Ok(Response::builder()
+                        .status(hyper::StatusCode::FOUND)
+                        .header(hyper::header::LOCATION, url)
+                        .body(empty_body())
+                        .unwrap())
+                }
+            }
         }
         _ => not_found()
     }

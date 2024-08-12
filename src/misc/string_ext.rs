@@ -21,6 +21,19 @@ impl StringExt for &str {
     }
 }
 
+pub trait OrEmpty {
+    fn or_empty(&self) -> &str;
+}
+
+impl OrEmpty for Option<String> {
+    fn or_empty(&self) -> &str {
+        return match self {
+            None => "",
+            Some(value) => value,
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::misc::string_ext::StringExt;

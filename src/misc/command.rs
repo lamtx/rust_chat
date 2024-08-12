@@ -4,7 +4,7 @@ macro_rules! command {
     (
         $(
            $(#[$docs:meta])*
-           $vis:vis $name:ident($($param:ident: $input:ty),*) $(-> $output:ty)?,
+           $vis:vis $name:ident($($param:ident: $input:ty),*) $(-> $output:ty)?;
         )+
     ) => {
         #[warn(unused_parens)]

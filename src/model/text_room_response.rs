@@ -21,9 +21,9 @@ impl TextRoomResponse {
         }
     }
     pub fn destroyed(transaction: Option<String>) -> TextRoomResponse {
-        TextRoomResponse::Ok {
+        TextRoomResponse::Error {
             transaction,
-            ok: "destroyed".to_string(),
+            error: "Room was destroyed".to_string(),
         }
     }
 

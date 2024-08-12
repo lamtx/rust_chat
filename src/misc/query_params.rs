@@ -2,10 +2,12 @@ use hyper::Uri;
 use querystring::{querify, QueryParam};
 use urlencoding::decode;
 
-use crate::misc::{AppResult, error};
-
 pub struct QueryParams<'a> {
     vec: Vec<QueryParam<'a>>,
+}
+
+pub enum ParseParamError<'a> {
+    FieldRequired { name: &'a str }
 }
 
 impl<'a> QueryParams<'a> {
@@ -22,9 +24,9 @@ impl<'a> QueryParams<'a> {
             .map(|(_, value)| decode_url(value))
     }
 
-    pub fn require(&self, name: &str) -> AppResult<String> {
+    pub fn require<'b>(&self, name: &'b str) -> Result<String, ParseParamError<'b>> {
         match self.get(name) {
-            None => error(format!("{name} is required")),
+            None => Err(ParseParamError::FieldRequired { name }),
             Some(value) => Ok(value),
         }
     }
@@ -45,11 +47,11 @@ fn decode_url(value: &str) -> String {
 }
 
 pub trait Params {
-    fn parse(params: &QueryParams) -> AppResult<Self>
+    fn parse<'a>(params: &QueryParams) -> Result<Self, ParseParamError<'a>>
     where
         Self: Sized;
 
-    fn parse_uri(uri: &Uri) -> AppResult<Self>
+    fn parse_uri<'a>(uri: &Uri) -> Result<Self, ParseParamError<'a>>
     where
         Self: Sized,
     {

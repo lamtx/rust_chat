@@ -25,6 +25,12 @@ impl AppError {
             message: Some("Secret does not match".to_string()),
         }
     }
+    pub fn not_found(message: String) -> AppError {
+        AppError {
+            code: StatusCode::NOT_FOUND,
+            message: Some(message),
+        }
+    }
 }
 
 impl Display for AppError {
@@ -42,8 +48,3 @@ pub trait ToBadRequest<T> {
     fn to_bad_request(self) -> Result<T, AppError>;
 }
 
-impl<T, E> ToBadRequest<T> for Result<T, E> where E: Display {
-    fn to_bad_request(self) -> Result<T, AppError> {
-        self.map_err(|e| AppError::bad_request(format!("{e}")))
-    }
-}

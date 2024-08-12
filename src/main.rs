@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use hyper::server::conn::http1;

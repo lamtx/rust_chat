@@ -5,12 +5,22 @@ use hyper::header::CONTENT_TYPE;
 
 use crate::misc::HttpResponse;
 
+pub fn empty_body() -> Full<Bytes> {
+    // completely does not understand but it comes from
+    // https://hyper.rs/guides/1/server/echo/
+    Full::new(const { Bytes::new() })
+}
+
+pub fn string_body(text: String) -> Full<Bytes> {
+    // completely does not understand but it comes from
+    // https://hyper.rs/guides/1/server/echo/
+    Full::new(Bytes::from(text))
+}
+
 pub fn ok_response() -> HttpResponse {
     Response::builder()
         .status(StatusCode::OK)
-        // completely does not understand but it comes from
-        // https://hyper.rs/guides/1/server/echo/
-        .body(Full::new(const { Bytes::new() }))
+        .body(empty_body())
         .unwrap()
 }
 
@@ -20,7 +30,7 @@ pub fn json_response(json: String) -> HttpResponse {
         .header(CONTENT_TYPE, "application/json")
         // again, completely does not understand but it comes from
         // https://hyper.rs/guides/1/server/echo/
-        .body(Full::new(json.into()))
+        .body(string_body(json))
         .unwrap()
 }
 

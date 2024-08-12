@@ -1,11 +1,11 @@
-use crate::misc::{AppResult, Params, QueryParams};
+use crate::misc::{Params, ParseParamError, QueryParams};
 
 pub struct LastAnnouncementParams {
     pub types: Vec<String>,
 }
 
 impl Params for LastAnnouncementParams {
-    fn parse(params: &QueryParams) -> AppResult<LastAnnouncementParams> {
+    fn parse<'a>(params: &QueryParams) -> Result<Self, ParseParamError<'a>> {
         Ok(LastAnnouncementParams {
             types: params.get_list("types")
         })

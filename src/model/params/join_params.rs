@@ -1,4 +1,4 @@
-use crate::misc::{AppResult, Params, QueryParams};
+use crate::misc::{Params, ParseParamError, QueryParams};
 
 #[derive(Debug)]
 pub struct JoinParams {
@@ -8,7 +8,7 @@ pub struct JoinParams {
 }
 
 impl Params for JoinParams {
-    fn parse(params: &QueryParams) -> AppResult<JoinParams> {
+    fn parse<'a>(params: &QueryParams) -> Result<JoinParams, ParseParamError<'a>> {
         Ok(JoinParams {
             username: params.get("username"),
             display: params.get("display"),

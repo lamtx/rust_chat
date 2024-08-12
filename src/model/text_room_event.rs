@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(tag = "textroom")]
-pub enum TextRoomEvent {
+pub enum TextRoomEvent<'a> {
     #[serde(rename = "announcement")]
     Announcement {
         #[serde(with = "crate::misc::date_serde")]
         date: DateTime<Utc>,
-        text: String,
-        r#type: String,
+        text: &'a str,
+        r#type: &'a str,
     },
 
     #[serde(rename = "banned")]
@@ -20,25 +20,25 @@ pub enum TextRoomEvent {
 
     #[serde(rename = "join")]
     Joined {
-        username: Option<String>,
-        display: Option<String>,
+        username: Option<&'a str>,
+        display: Option<&'a str>,
         participants: usize,
     },
 
     #[serde(rename = "leave")]
     Left {
-        username: Option<String>,
-        display: Option<String>,
+        username: Option<&'a str>,
+        display: Option<&'a str>,
         participants: usize,
     },
 
     #[serde(rename = "message")]
     Message {
-        from: String,
-        display: String,
+        from: &'a str,
+        display: &'a str,
         #[serde(with = "crate::misc::date_serde")]
         date: DateTime<Utc>,
-        text: String,
-        r#type: String,
+        text: &'a str,
+        r#type: &'a str,
     },
 }

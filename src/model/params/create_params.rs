@@ -1,4 +1,4 @@
-use crate::misc::{AppResult, Params, QueryParams};
+use crate::misc::{Params, ParseParamError, QueryParams};
 
 pub struct CreateParams {
     pub secret: String,
@@ -7,7 +7,7 @@ pub struct CreateParams {
 }
 
 impl Params for CreateParams {
-    fn parse(params: &QueryParams) -> AppResult<CreateParams> {
+    fn parse<'a>(params: &QueryParams) -> Result<Self, ParseParamError<'a>> {
         Ok(CreateParams {
             secret: params.require("secret")?,
             post: params.get("post"),

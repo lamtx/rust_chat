@@ -35,6 +35,17 @@ pub enum TextRoomRequest {
     },
 }
 
+impl TextRoomRequest {
+    pub fn transaction(self) -> Option<String> {
+        match self {
+            TextRoomRequest::Announcement { transaction, .. } => transaction,
+            TextRoomRequest::Ban { transaction, .. } => transaction,
+            TextRoomRequest::Leave { transaction, .. } => transaction,
+            TextRoomRequest::Message { transaction, .. } => transaction,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::model::text_room_request::TextRoomRequest;
