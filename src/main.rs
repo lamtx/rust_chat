@@ -20,9 +20,10 @@ mod service;
 
 #[tokio::main]
 async fn main() {
+    log!("app is running on DEBUG mode, you should not see it in the release build");
     let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("App is running on: {addr}");
+    println!("service is running on: http://{addr}");
 
     let global_state = Arc::new(ChatService::create());
     loop {

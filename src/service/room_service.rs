@@ -11,12 +11,12 @@ use hyper_util::rt::TokioExecutor;
 use serde::Serialize;
 use tokio::sync::mpsc::channel;
 
-use crate::command;
 use crate::config::PORT;
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, RoomInfo, TextRoomEvent};
 use crate::service::client_service::ChatClient;
 use crate::service::Room;
+use crate::{command, log};
 
 command! {
     pub Status() -> RoomInfo;
@@ -54,8 +54,8 @@ impl ChatRoom {
         };
         tokio::spawn(async move {
             let mut state = ChatRoomInner::new(room, on_room_detached);
-            println!("`room {}` created", &state.room.uid);
-            println!(
+            log!("`room {}` created", &state.room.uid);
+            log!(
                 "Click here to destroy: http://127.0.0.1:{}{}/destroy?secret={}",
                 PORT, &state.room.uid, &state.room.secret
             );
@@ -63,10 +63,10 @@ impl ChatRoom {
             while let Some(command) = rx.recv().await {
                 match command {
                     Command::Status { resp_tx } => {
-                        resp_tx.send(state.status()).unwrap();
+                        let _ = resp_tx.send(state.status());
                     }
                     Command::Count { resp_tx } => {
-                        resp_tx.send(state.count()).unwrap();
+                        let _ = resp_tx.send(state.count());
                     }
                     Command::AddClient {
                         client,
@@ -74,7 +74,7 @@ impl ChatRoom {
                         resp_tx,
                     } => {
                         state.add_client(client, image_url);
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::Announce {
                         sender,
@@ -83,7 +83,7 @@ impl ChatRoom {
                         resp_tx,
                     } => {
                         state.announce(sender, r#type, text);
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::SendMessage {
                         sender,
@@ -92,7 +92,7 @@ impl ChatRoom {
                         resp_tx,
                     } => {
                         state.send_message(sender, r#type, text);
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::Ban {
                         from,
@@ -100,43 +100,44 @@ impl ChatRoom {
                         resp_tx,
                     } => {
                         state.ban(from, victim);
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::Broadcast { message, resp_tx } => {
                         state.broadcast(message);
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::GetNextId { resp_tx } => {
                         state.next_id += 1;
-                        resp_tx.send(state.next_id).unwrap();
+                        let _ = resp_tx.send(state.next_id);
                     }
                     Command::RemoveClient { id, resp_tx } => {
                         if !state.clients.is_empty() {
                             state.clients.retain(|e| e.id != id);
-                            println!("client id:{id} detached (size: {})", state.clients.len());
+                            log!("client id:{id} detached (size: {})", state.clients.len());
                         }
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::Destroy { resp_tx } => {
                         state.destroy();
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                     Command::LastAnnouncement { types, resp_tx } => {
-                        resp_tx.send(state.last_announcement(types)).unwrap()
+                        let _ = resp_tx.send(state.last_announcement(types));
                     }
                     Command::Participants { resp_tx } => {
-                        resp_tx.send(state.participants()).unwrap();
+                        let _ = resp_tx.send(state.participants());
                     }
                     Command::AllMessages { resp_tx } => {
                         let json = serde_json::to_string(&state.messages).unwrap();
-                        resp_tx.send(json).unwrap();
+                        let _ = resp_tx.send(json);
                     }
                     Command::Photo { username, resp_tx } => {
                         let photo = state.photos.get(&username).map(|e| e.to_owned());
-                        resp_tx.send(photo).unwrap();
+                        let _ = resp_tx.send(photo);
                     }
                 }
             }
+            log!("room `{}` dropped", &state.room.uid);
         });
 
         chat_room
@@ -169,7 +170,7 @@ impl ChatRoom {
             });
             Ok(response)
         } else {
-            println!("The request is not upgradable to web socket");
+            log!("The request is not upgradable to web socket");
             Err(ProtocolError::MissingConnectionUpgradeHeader)
             // Or MissingUpgradeWebSocketHeader but it's not importance
         }
@@ -248,7 +249,7 @@ where
             participants: self.count(),
         };
         self.broadcast_json(event);
-        println!(
+        log!(
             "'{}' joined (id: {}, count:{})",
             participant.display.or_empty(),
             client.id,
@@ -306,7 +307,7 @@ where
     }
 
     fn ban(&self, from: Option<String>, victim: String) {
-        println!("{:?} wants to ban {victim}", from);
+        log!("{:?} wants to ban {victim}", from);
         let victims = self
             .clients
             .iter()
@@ -351,16 +352,12 @@ where
         tokio::spawn(async move {
             match client.request(request).await {
                 Ok(response) => {
-                    if response.status() == StatusCode::OK {
-                        println!("posted ok");
-                        println!("{:?}", response.into_body());
-                    } else {
-                        println!("posted failed {}", response.status());
-                        println!("{:?}", response.into_body());
+                    if response.status() != StatusCode::OK {
+                        eprintln!("posted failed, status code:{}", response.status());
                     }
                 }
                 Err(e) => {
-                    println!("posted error {:?}", e);
+                    eprintln!("posted error: {:?}", e);
                 }
             }
         });
@@ -383,7 +380,7 @@ where
             self.broadcast_json(&TextRoomEvent::Destroyed);
             self.clients.clear();
             (self.on_room_detached)(self.room.uid.clone());
-            println!("room `{}` destroyed", self.room.name())
+            log!("room `{}` destroyed", self.room.name())
         }
     }
     fn destroy(&mut self) {

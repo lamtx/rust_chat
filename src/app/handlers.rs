@@ -7,10 +7,10 @@ use serde_json::json;
 
 use crate::app::app_error::{AppError, ToBadRequest};
 use crate::app::common_errors::not_found;
-use crate::json_response;
 use crate::misc::{empty_body, ok_response, HttpRequest, HttpResponse, Params, StringExt};
 use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams, PhotoParams};
 use crate::service::{ChatService, Room};
+use crate::{json_response, log};
 
 pub async fn default_handler(
     service: &ChatService,
@@ -21,8 +21,7 @@ pub async fn default_handler(
         Err(error) => {
             let status_code = error.code;
             let json = serde_json::to_string(&error).unwrap();
-            #[cfg(debug_assertions)]
-            println!("Error {status_code}: {json}");
+            log!("Err {status_code}: {json}");
             Ok(Response::builder()
                 .status(status_code)
                 .header(hyper::header::CONTENT_TYPE, "application/json")
@@ -39,8 +38,7 @@ pub async fn handle_request(
     let uri = req.uri();
     let action = uri.path().substring_after_last('/').to_string();
     let room = uri.path().substring_before_last('/').to_string();
-    #[cfg(debug_assertions)]
-    println!("{}: {uri}", req.method());
+    log!("{}: {uri}", req.method());
     match action.as_str() {
         "" => not_found(),
         "create" => {

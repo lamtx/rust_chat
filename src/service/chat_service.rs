@@ -30,21 +30,19 @@ impl ChatService {
                 match command {
                     CreateRoom { room, resp_tx } => {
                         let result = state.create_room(room, &op);
-                        resp_tx.send(result).unwrap();
+                        let _ = resp_tx.send(result);
                     }
                     Status { resp_tx } => {
                         let result = state.status().await;
-                        resp_tx.send(result).unwrap();
+                        let _ = resp_tx.send(result);
                     }
                     GetRoom { room, resp_tx } => {
                         let result = state.get_room(&room);
-                        resp_tx
-                            .send(result)
-                            .unwrap_or_else(|_| panic!("channel broken"))
+                        let _ = resp_tx.send(result);
                     }
                     DetachRoom { room, resp_tx } => {
                         state.detach_room(room);
-                        resp_tx.send(()).unwrap();
+                        let _ = resp_tx.send(());
                     }
                 }
             }
