@@ -38,7 +38,9 @@ impl ChatService {
                     }
                     GetRoom { room, resp_tx } => {
                         let result = state.get_room(&room);
-                        resp_tx.send(result).unwrap_or_else(|_| panic!("channel broken"))
+                        resp_tx
+                            .send(result)
+                            .unwrap_or_else(|_| panic!("channel broken"))
                     }
                     DetachRoom { room, resp_tx } => {
                         state.detach_room(room);

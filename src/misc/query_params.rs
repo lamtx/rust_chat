@@ -6,20 +6,24 @@ pub struct QueryParams<'a> {
     vec: Vec<QueryParam<'a>>,
 }
 
+#[derive(Debug)]
 pub enum ParseParamError<'a> {
-    FieldRequired { name: &'a str }
+    FieldRequired { name: &'a str },
 }
 
 impl<'a> QueryParams<'a> {
     pub fn parse(s: Option<&'a str>) -> QueryParams<'a> {
         match s {
-            None => QueryParams { vec: const { Vec::new() } },
+            None => QueryParams {
+                vec: const { Vec::new() },
+            },
             Some(s) => QueryParams { vec: querify(s) },
         }
     }
 
     pub fn get(&self, name: &str) -> Option<String> {
-        self.vec.iter()
+        self.vec
+            .iter()
             .find(|(key, _)| key == &name)
             .map(|(_, value)| decode_url(value))
     }
@@ -32,11 +36,10 @@ impl<'a> QueryParams<'a> {
     }
 
     pub fn get_list(&self, name: &str) -> Vec<String> {
-        let value = self.vec.iter()
-            .find(|(key, _)| key == &name);
+        let value = self.vec.iter().find(|(key, _)| key == &name);
         match value {
-            None => const { Vec::new() }
-            Some((_, a)) => a.split(',').map(|e| decode_url(e)).collect()
+            None => const { Vec::new() },
+            Some((_, a)) => a.split(',').map(|e| decode_url(e)).collect(),
         }
     }
 }

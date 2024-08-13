@@ -16,7 +16,6 @@ impl Message {
     pub const MODERATE: &'static str = "moderate";
     pub const ANNOUNCEMENT: &'static str = "announcement";
     pub const MESSAGE: &'static str = "message";
-
     pub const TYPE_BAN: &'static str = "ban";
     pub const TYPE_ROOM_CREATED: &'static str = "room_created";
     pub const TYPE_ROOM_DESTROYED: &'static str = "room_destroyed";

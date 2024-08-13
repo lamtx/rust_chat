@@ -12,6 +12,7 @@ use serde::Serialize;
 use tokio::sync::mpsc::channel;
 
 use crate::command;
+use crate::config::PORT;
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, RoomInfo, TextRoomEvent};
 use crate::service::client_service::ChatClient;
@@ -54,6 +55,10 @@ impl ChatRoom {
         tokio::spawn(async move {
             let mut state = ChatRoomInner::new(room, on_room_detached);
             println!("`room {}` created", &state.room.uid);
+            println!(
+                "Click here to destroy: http://127.0.0.1:{}{}/destroy?secret={}",
+                PORT, &state.room.uid, &state.room.secret
+            );
             state.post_created();
             while let Some(command) = rx.recv().await {
                 match command {
@@ -63,19 +68,37 @@ impl ChatRoom {
                     Command::Count { resp_tx } => {
                         resp_tx.send(state.count()).unwrap();
                     }
-                    Command::AddClient { client, image_url, resp_tx } => {
+                    Command::AddClient {
+                        client,
+                        image_url,
+                        resp_tx,
+                    } => {
                         state.add_client(client, image_url);
                         resp_tx.send(()).unwrap();
                     }
-                    Command::Announce { sender, r#type, text, resp_tx } => {
+                    Command::Announce {
+                        sender,
+                        r#type,
+                        text,
+                        resp_tx,
+                    } => {
                         state.announce(sender, r#type, text);
                         resp_tx.send(()).unwrap();
                     }
-                    Command::SendMessage { sender, r#type, text, resp_tx } => {
+                    Command::SendMessage {
+                        sender,
+                        r#type,
+                        text,
+                        resp_tx,
+                    } => {
                         state.send_message(sender, r#type, text);
                         resp_tx.send(()).unwrap();
                     }
-                    Command::Ban { from, victim, resp_tx } => {
+                    Command::Ban {
+                        from,
+                        victim,
+                        resp_tx,
+                    } => {
                         state.ban(from, victim);
                         resp_tx.send(()).unwrap();
                     }
@@ -119,7 +142,11 @@ impl ChatRoom {
         chat_room
     }
 
-    pub async fn join(&self, mut req: HttpRequest, params: JoinParams) -> Result<HttpResponse, ProtocolError> {
+    pub async fn join(
+        &self,
+        mut req: HttpRequest,
+        params: JoinParams,
+    ) -> Result<HttpResponse, ProtocolError> {
         use hyper_tungstenite::*;
         if is_upgrade_request(&req) {
             let (response, websocket) = upgrade(&mut req, None)?;
@@ -181,9 +208,7 @@ where
     fn status(&self) -> RoomInfo {
         RoomInfo {
             room: self.room.uid.clone(),
-            participants: self.clients
-                .iter().map(|e| e.me.clone())
-                .collect(),
+            participants: self.clients.iter().map(|e| e.me.clone()).collect(),
             messages: self.messages.len(),
         }
     }
@@ -199,9 +224,10 @@ where
     fn last_announcement(&self, types: Vec<String>) -> HashMap<String, String> {
         let mut result = HashMap::new();
         for r#type in types {
-            let message = self.messages.iter().rfind(
-                |x| x.textroom == Message::ANNOUNCEMENT && x.r#type == r#type
-            );
+            let message = self
+                .messages
+                .iter()
+                .rfind(|x| x.textroom == Message::ANNOUNCEMENT && x.r#type == r#type);
             if let Some(text) = message {
                 result.insert(r#type, text.r#type.clone());
             }
@@ -212,7 +238,8 @@ where
 
     fn add_client(&mut self, client: ChatClient, image_url: Option<String>) {
         if client.me.username.is_some() && image_url.is_some() {
-            self.photos.insert(client.me.username.clone().unwrap(), image_url.unwrap());
+            self.photos
+                .insert(client.me.username.clone().unwrap(), image_url.unwrap());
         }
         let participant = &client.me;
         let event = &TextRoomEvent::Joined {
@@ -280,22 +307,26 @@ where
 
     fn ban(&self, from: Option<String>, victim: String) {
         println!("{:?} wants to ban {victim}", from);
-        let victims = self.clients.iter().filter(
-            |&e| e.me.username.contains(&victim)
-        );
+        let victims = self
+            .clients
+            .iter()
+            .filter(|&e| e.me.username.contains(&victim));
         let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
         for client in victims {
             client.op.spawn().Send(WsMessage::Text(event.clone()));
             client.op.spawn().Leave();
         }
-        self.post(&Message {
-            textroom: Message::MODERATE,
-            room: self.room.name().to_string(),
-            r#type: Message::TYPE_BAN.into(),
-            text: victim,
-            date: Utc::now(),
-            from: from.unwrap_or_default(),
-        }, false);
+        self.post(
+            &Message {
+                textroom: Message::MODERATE,
+                room: self.room.name().to_string(),
+                r#type: Message::TYPE_BAN.into(),
+                text: victim,
+                date: Utc::now(),
+                from: from.unwrap_or_default(),
+            },
+            false,
+        );
     }
 
     fn post_created(&self) {
@@ -339,6 +370,7 @@ where
         let content = serde_json::to_string(body).unwrap();
         self.broadcast(content)
     }
+
     fn broadcast(&self, body: String) {
         for client in &self.clients {
             client.op.spawn().Send(WsMessage::Text(body.clone()))
@@ -349,12 +381,6 @@ where
         if !self.detached {
             self.detached = true;
             self.broadcast_json(&TextRoomEvent::Destroyed);
-            // forcing client close immediately makes them crash.
-            // clients always try to reconnect immediately after the ws closed.
-            // let clients = std::mem::replace(&mut self.clients, Vec::new());
-            // for client in clients {
-            //     client.op.spawn().Close();
-            // }
             self.clients.clear();
             (self.on_room_detached)(self.room.uid.clone());
             println!("room `{}` destroyed", self.room.name())
@@ -362,6 +388,9 @@ where
     }
     fn destroy(&mut self) {
         self.detach();
-        self.post(&Message::room_destroyed(self.room.name().to_string()), false)
+        self.post(
+            &Message::room_destroyed(self.room.name().to_string()),
+            false,
+        )
     }
 }

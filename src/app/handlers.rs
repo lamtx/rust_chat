@@ -8,11 +8,14 @@ use serde_json::json;
 use crate::app::app_error::{AppError, ToBadRequest};
 use crate::app::common_errors::not_found;
 use crate::json_response;
-use crate::misc::{empty_body, HttpRequest, HttpResponse, ok_response, Params, StringExt};
+use crate::misc::{empty_body, ok_response, HttpRequest, HttpResponse, Params, StringExt};
 use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams, PhotoParams};
 use crate::service::{ChatService, Room};
 
-pub async fn default_handler(service: &ChatService, req: HttpRequest) -> Result<HttpResponse, Infallible> {
+pub async fn default_handler(
+    service: &ChatService,
+    req: HttpRequest,
+) -> Result<HttpResponse, Infallible> {
     match handle_request(service, req).await {
         Ok(res) => Ok(res),
         Err(error) => {
@@ -29,7 +32,10 @@ pub async fn default_handler(service: &ChatService, req: HttpRequest) -> Result<
     }
 }
 
-pub async fn handle_request(service: &ChatService, req: HttpRequest) -> Result<HttpResponse, AppError> {
+pub async fn handle_request(
+    service: &ChatService,
+    req: HttpRequest,
+) -> Result<HttpResponse, AppError> {
     let uri = req.uri();
     let action = uri.path().substring_after_last('/').to_string();
     let room = uri.path().substring_before_last('/').to_string();
@@ -52,9 +58,7 @@ pub async fn handle_request(service: &ChatService, req: HttpRequest) -> Result<H
                 room_action(service, req, room, action).await
             }
         }
-        &_ => {
-            room_action(service, req, room, action).await
-        }
+        &_ => room_action(service, req, room, action).await,
     }
 }
 
@@ -65,12 +69,16 @@ async fn create_room(
     room: String,
     params: CreateParams,
 ) -> Result<HttpResponse, AppError> {
-    service.op.CreateRoom(Room {
-        uid: room,
-        secret: params.secret,
-        post: params.post,
-        post_types: params.post_types,
-    }).await.to_bad_request()?;
+    service
+        .op
+        .CreateRoom(Room {
+            uid: room,
+            secret: params.secret,
+            post: params.post,
+            post_types: params.post_types,
+        })
+        .await
+        .to_bad_request()?;
     Ok(ok_response())
 }
 
@@ -103,14 +111,10 @@ async fn room_action(
                 Err(AppError::secret())
             }
         }
-        "count" => {
-            Ok(json_response!({
-                "count": chat_room.op.Count().await,
-            }))
-        }
-        "status" => {
-            Ok(json_response!(chat_room.op.Status().await))
-        }
+        "count" => Ok(json_response!({
+            "count": chat_room.op.Count().await,
+        })),
+        "status" => Ok(json_response!(chat_room.op.Status().await)),
         "lastAnnouncement" => {
             let params = LastAnnouncementParams::parse_uri(req.uri()).to_bad_request()?;
             let announcements = chat_room.op.LastAnnouncement(params.types).await;
@@ -129,15 +133,13 @@ async fn room_action(
             let photo = chat_room.op.Photo(params.username).await;
             match photo {
                 None => not_found(),
-                Some(url) => {
-                    Ok(Response::builder()
-                        .status(hyper::StatusCode::FOUND)
-                        .header(hyper::header::LOCATION, url)
-                        .body(empty_body())
-                        .unwrap())
-                }
+                Some(url) => Ok(Response::builder()
+                    .status(hyper::StatusCode::FOUND)
+                    .header(hyper::header::LOCATION, url)
+                    .body(empty_body())
+                    .unwrap()),
             }
         }
-        _ => not_found()
+        _ => not_found(),
     }
 }

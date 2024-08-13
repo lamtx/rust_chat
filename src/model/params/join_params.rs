@@ -31,6 +31,9 @@ mod tests {
         let params = JoinParams::parse_uri(&uri).unwrap();
         println!("{:?}", params);
         assert_eq!(params.display, Some("THỬ NGHIỆM".to_string()));
-        assert_eq!(params.image_url, Some("https://dev.shoplive.vn/content/images/avatars/133.jpg".to_string()));
+        assert_eq!(
+            params.image_url,
+            Some("https://dev.shoplive.vn/content/images/avatars/133.jpg".to_string())
+        );
     }
 }

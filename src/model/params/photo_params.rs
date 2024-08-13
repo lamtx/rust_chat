@@ -7,7 +7,7 @@ pub struct PhotoParams {
 impl Params for PhotoParams {
     fn parse<'a>(params: &QueryParams) -> Result<Self, ParseParamError<'a>> {
         Ok(PhotoParams {
-            username: params.require("username")?
+            username: params.require("username")?,
         })
     }
 }

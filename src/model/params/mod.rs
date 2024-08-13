@@ -9,4 +9,3 @@ mod destroy_params;
 mod join_params;
 mod last_announcement_params;
 mod photo_params;
-

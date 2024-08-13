@@ -8,12 +8,9 @@ use serde::{Deserialize, Deserializer, Serializer};
 //        S: Serializer
 //
 // although it may also be generic over the input types T.
-pub fn serialize<S>(
-    date: &DateTime<Utc>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
 {
     serializer.serialize_str(&date.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
@@ -25,11 +22,9 @@ pub fn serialize<S>(
 //        D: Deserializer<'de>
 //
 // although it may also be generic over the output types T.
-pub fn deserialize<'de, D>(
-    deserializer: D,
-) -> Result<DateTime<Utc>, D::Error>
-    where
-        D: Deserializer<'de>,
+pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
     match DateTime::parse_from_rfc3339(&s) {

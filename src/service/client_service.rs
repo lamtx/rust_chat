@@ -6,8 +6,10 @@ use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
 use hyper_tungstenite::tungstenite::{Error, Message};
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio::time::{Instant, interval};
 
 use crate::command;
+use crate::config::PING_INTERVAL;
 use crate::misc::OrEmpty;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
@@ -27,13 +29,15 @@ impl ChatClient {
     ) -> Result<ChatClient, Error> {
         let (sink, mut stream) = socket.await?.split();
         let (tx, mut rx) = mpsc::channel::<Command>(30);
+        let op = CommandSender { tx };
         let mut state = ClientImpl {
             room,
             me: me.clone(),
             my_id,
-            op: Some(CommandSender { tx: tx.clone() }), //loop here
+            op: Some(op.clone()),
             is_detached: false,
             is_socket_closed: false,
+            last_pong: Instant::now(),
             sink,
         };
 
@@ -43,7 +47,6 @@ impl ChatClient {
                 match command {
                     Command::OnListen { text, resp_tx } => {
                         state.on_listen(text);
-                        state.send(Message::Ping(vec![1])).await.unwrap();
                         resp_tx.send(()).unwrap()
                     }
                     Command::Send { message, resp_tx } => {
@@ -64,11 +67,19 @@ impl ChatClient {
                         state.close().await;
                         resp_tx.send(()).unwrap()
                     }
+                    Command::SendPing { instant, resp_tx } => {
+                        resp_tx.send(state.send_ping(instant).await).unwrap();
+                    }
+                    Command::SetPong { now, resp_tx } => {
+                        state.last_pong = now;
+                        resp_tx.send(()).unwrap();
+                    }
                 }
             }
+            println!("XXXX: OP client ended")
         });
         // listening to ws stream
-        let op = CommandSender { tx: tx.clone() };
+        let inner_op = op.clone();
         tokio::spawn(async move {
             while let Some(message) = stream.next().await {
                 match message {
@@ -78,21 +89,26 @@ impl ChatClient {
                     }
                     Ok(message) => match message {
                         Message::Text(text) => {
-                            op.OnListen(text).await;
+                            inner_op.OnListen(text).await;
                         }
                         Message::Binary(msg) => {
                             println!("Received binary message: {:02X?}", msg);
                         }
                         Message::Ping(msg) => {
                             println!("Received ping message: {:02X?}", msg);
-                            op.spawn().Send(Message::Pong(msg));
+                            inner_op.spawn().Send(Message::Pong(msg));
                         }
-                        Message::Pong(msg) => {
-                            println!("Received pong message: {:02X?}", msg);
+                        Message::Pong(_) => {
+                            let now = Instant::now();
+                            println!("receive pong at {:?}", now);
+                            inner_op.SetPong(now).await;
                         }
                         Message::Close(msg) => {
                             if let Some(msg) = &msg {
-                                println!("Received close message with code {} and message: {}", msg.code, msg.reason);
+                                println!(
+                                    "Received close message with code {} and message: {}",
+                                    msg.code, msg.reason
+                                );
                             } else {
                                 println!("Received close message");
                             }
@@ -100,18 +116,26 @@ impl ChatClient {
                         Message::Frame(_) => {
                             unreachable!();
                         }
-                    }
+                    },
                 }
             }
-            println!("web socket ended correctly");
-            op.Close().await;
+            println!("web socket ended");
+            inner_op.Close().await;
+        });
+        // ping client
+        let inner_op = op.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(PING_INTERVAL);
+            loop {
+                let instant = interval.tick().await;
+                if !inner_op.SendPing(instant).await {
+                    println!("client closed, stop sending ping");
+                    break;
+                }
+            }
         });
 
-        Ok(ChatClient {
-            id: my_id,
-            op: CommandSender { tx },
-            me,
-        })
+        Ok(ChatClient { id: my_id, op, me })
     }
 }
 
@@ -119,14 +143,18 @@ pub struct ClientImpl {
     room: ChatRoom,
     me: Participant,
     my_id: usize,
+    // weak reference, set null of client is closed
     op: Option<CommandSender>,
     sink: SplitSink<HyperWebsocketStream, Message>,
+    last_pong: Instant,
     is_detached: bool,
     is_socket_closed: bool,
 }
 
 command! {
     OnListen(text: String);
+    SendPing(instant: Instant) -> bool;
+    SetPong(now: Instant);
     pub Close();
     pub Send(message: Message);
     pub Leave();
@@ -137,9 +165,7 @@ impl ClientImpl {
         println!("receive: {message}");
 
         let response = match serde_json::from_str(&message) {
-            Ok(value) => {
-                self.handle_request(value)
-            }
+            Ok(value) => self.handle_request(value),
             Err(e) => {
                 println!("parse json failed: {:?}", e);
                 serde_json::from_str::<UnknownTextRoomRequest>(&message)
@@ -156,7 +182,8 @@ impl ClientImpl {
             match &self.op {
                 None => {}
                 Some(op) => {
-                    op.spawn().Send(Message::Text(serde_json::to_string(&response).unwrap()));
+                    op.spawn()
+                        .Send(Message::Text(serde_json::to_string(&response).unwrap()));
                 }
             }
         }
@@ -169,10 +196,19 @@ impl ClientImpl {
         println!("handling: {:?}", &request);
         match request {
             TextRoomRequest::Message { r#type, text, .. } => {
-                self.room.op.spawn().SendMessage(self.me.clone(), r#type, text);
+                self.room
+                    .op
+                    .spawn()
+                    .SendMessage(self.me.clone(), r#type, text);
                 None
             }
-            TextRoomRequest::Announcement { secret, r#type, text, transaction, .. } => {
+            TextRoomRequest::Announcement {
+                secret,
+                r#type,
+                text,
+                transaction,
+                ..
+            } => {
                 if self.room.secret.deref() == &secret {
                     self.room.op.spawn().Announce(self.me.clone(), r#type, text);
                     None
@@ -184,7 +220,11 @@ impl ClientImpl {
                 self.leave();
                 Some(TextRoomResponse::left(transaction))
             }
-            TextRoomRequest::Ban { secret, username, transaction } => {
+            TextRoomRequest::Ban {
+                secret,
+                username,
+                transaction,
+            } => {
                 if self.room.secret.deref() == &secret {
                     self.room.op.spawn().Ban(self.me.username.clone(), username);
                     None
@@ -215,10 +255,33 @@ impl ClientImpl {
             room.Broadcast(serde_json::to_string(event).unwrap()).await;
         });
     }
+    async fn send_ping(&mut self, instant: Instant) -> bool {
+        if self.is_socket_closed {
+            return false;
+        }
+        let duration = instant.duration_since(self.last_pong);
+        println!("last pong since {:?}", duration);
+        let responded = duration <= PING_INTERVAL * 2;
+        if responded {
+            println!("send ping at {:?}", instant);
+            let _ = self.send(Message::Ping(const { Vec::new() })).await;
+        } else {
+            println!(
+                "client `{}` not responded, closing",
+                self.me.display.or_empty()
+            );
+            self.close().await
+        }
+        responded
+    }
+
     async fn close(&mut self) {
-        self.detach();
-        self.is_socket_closed = true;
-        let _ = self.sink.close().await;
+        if !self.is_socket_closed {
+            self.detach();
+            self.is_socket_closed = true;
+            // FIXME: WS do nothing if the stream was closed
+            let _ = self.sink.close().await;
+        }
     }
 
     fn detach(&mut self) {
@@ -228,6 +291,12 @@ impl ClientImpl {
             println!("`{}` left (id:{})", self.me.display.or_empty(), self.my_id);
             self.room.op.spawn().RemoveClient(self.my_id);
         }
+    }
+}
+
+impl Drop for ClientImpl {
+    fn drop(&mut self) {
+        println!("`{}` dropped", self.me.display.or_empty())
     }
 }
 

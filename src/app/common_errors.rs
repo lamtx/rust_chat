@@ -8,20 +8,18 @@ use crate::service::ServiceError;
 
 #[macro_export]
 macro_rules! error {
-	($status_code: expr, $message: expr) => {{
+    ($status_code: expr, $message: expr) => {{
         Err(AppError {
             code: $status_code,
             message: Some($message),
         })
-	}};
-	($message: expr) => {
-		{
-		   Err(AppError {
+    }};
+    ($message: expr) => {{
+        Err(AppError {
             code: hyper::StatusCode::BAD_REQUEST,
             message: Some($message),
         })
-		}
-	}
+    }};
 }
 
 #[inline]
@@ -31,12 +29,12 @@ pub fn error<T>(message: String) -> Result<T, AppError> {
 
 #[macro_export]
 macro_rules! not_found {
-	($message: expr) => {{
+    ($message: expr) => {{
         Err(AppError {
             code: hyper::StatusCode::NOT_FOUND,
             message: Some($message),
         })
-    }}
+    }};
 }
 
 #[inline]
@@ -50,7 +48,7 @@ pub fn not_found<T>() -> Result<T, AppError> {
 impl<T> ToBadRequest<T> for Result<T, ServiceError> {
     fn to_bad_request(self) -> Result<T, AppError> {
         self.map_err(|e| match e {
-            ServiceError::RoomNotFound => AppError::not_found("Room not found".to_string())
+            ServiceError::RoomNotFound => AppError::not_found("Room not found".to_string()),
         })
     }
 }
@@ -58,7 +56,9 @@ impl<T> ToBadRequest<T> for Result<T, ServiceError> {
 impl<T> ToBadRequest<T> for Result<T, ParseParamError<'static>> {
     fn to_bad_request(self) -> Result<T, AppError> {
         self.map_err(|e| match e {
-            ParseParamError::FieldRequired { name } => AppError::bad_request(format!("{name} is required."))
+            ParseParamError::FieldRequired { name } => {
+                AppError::bad_request(format!("{name} is required."))
+            }
         })
     }
 }

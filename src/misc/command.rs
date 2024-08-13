@@ -1,4 +1,3 @@
-
 #[macro_export]
 macro_rules! command {
     (
@@ -16,7 +15,7 @@ macro_rules! command {
                 resp_tx: tokio::sync::oneshot::Sender<($($output)?)>,
             },
         )+
-        } 
+        }
         #[derive(Clone)]
         pub struct CommandSender {
             tx: tokio::sync::mpsc::Sender<Command>,
@@ -34,7 +33,7 @@ macro_rules! command {
         pub struct SpawnCommandSender {
             tx: tokio::sync::mpsc::Sender<Command>,
         }
-        
+
         impl SpawnCommandSender {
         $(
             $vis fn $name (self, $($param: $input,)*) {
@@ -48,7 +47,7 @@ macro_rules! command {
             }
         )+
         }
-        
+
         impl CommandSender {
             pub fn spawn(&self) -> SpawnCommandSender {
                 SpawnCommandSender {tx: self.tx.clone() }

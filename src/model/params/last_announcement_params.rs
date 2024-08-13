@@ -7,7 +7,7 @@ pub struct LastAnnouncementParams {
 impl Params for LastAnnouncementParams {
     fn parse<'a>(params: &QueryParams) -> Result<Self, ParseParamError<'a>> {
         Ok(LastAnnouncementParams {
-            types: params.get_list("types")
+            types: params.get_list("types"),
         })
     }
 }

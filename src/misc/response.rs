@@ -1,7 +1,7 @@
 use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use hyper::body::Bytes;
 use hyper::header::CONTENT_TYPE;
+use hyper::{Response, StatusCode};
 
 use crate::misc::HttpResponse;
 

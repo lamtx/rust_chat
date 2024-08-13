@@ -11,12 +11,12 @@ use crate::config::PORT;
 use crate::misc::*;
 use crate::service::ChatService;
 
-mod model;
 mod misc;
+mod model;
 #[macro_use]
 mod app;
-mod service;
 mod config;
+mod service;
 
 #[tokio::main]
 async fn main() {
