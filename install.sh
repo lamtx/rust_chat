@@ -3,7 +3,7 @@ BINARY="rust_chat"
 if [[ $(id -u) -ne 0 ]] ; then echo "Please run as root" ; exit 1 ; fi
 
 echo "Stopping service..."
-systemctl stop dart-chat
+systemctl stop $BINARY
 echo "Installing..."
 if [[ -f "target/release/$BINARY" ]]
 then
