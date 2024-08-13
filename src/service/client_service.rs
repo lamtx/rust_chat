@@ -1,12 +1,14 @@
 use std::ops::Deref;
 
-use futures::{sink::SinkExt, stream::StreamExt};
 use futures::stream::SplitSink;
-use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
+use futures::{sink::SinkExt, stream::StreamExt};
 use hyper_tungstenite::tungstenite::{Error, Message};
+use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
 use serde::Deserialize;
+use tokio::select;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, interval};
+use tokio::time::{interval, Instant};
+use tokio_util::sync::CancellationToken;
 
 use crate::command;
 use crate::config::PING_INTERVAL;
@@ -30,6 +32,7 @@ impl ChatClient {
         let (sink, mut stream) = socket.await?.split();
         let (tx, mut rx) = mpsc::channel::<Command>(30);
         let op = CommandSender { tx };
+        let ping_token = CancellationToken::new();
         let mut state = ClientImpl {
             room,
             me: me.clone(),
@@ -38,6 +41,7 @@ impl ChatClient {
             is_detached: false,
             is_socket_closed: false,
             last_pong: Instant::now(),
+            ping_token: ping_token.clone(),
             sink,
         };
 
@@ -45,18 +49,12 @@ impl ChatClient {
         tokio::spawn(async move {
             while let Some(command) = rx.recv().await {
                 match command {
-                    Command::OnListen { text, resp_tx } => {
-                        state.on_listen(text);
+                    Command::OnMessageReceived { message, resp_tx } => {
+                        state.on_message_received(message).await;
                         resp_tx.send(()).unwrap()
                     }
                     Command::Send { message, resp_tx } => {
-                        match state.send(message).await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                eprintln!("send ws failed: {:?}", e);
-                                state.close().await;
-                            }
-                        }
+                        state.send(message).await;
                         resp_tx.send(()).unwrap();
                     }
                     Command::Leave { resp_tx } => {
@@ -70,14 +68,11 @@ impl ChatClient {
                     Command::SendPing { instant, resp_tx } => {
                         resp_tx.send(state.send_ping(instant).await).unwrap();
                     }
-                    Command::SetPong { now, resp_tx } => {
-                        state.last_pong = now;
-                        resp_tx.send(()).unwrap();
-                    }
                 }
             }
             println!("XXXX: OP client ended")
         });
+
         // listening to ws stream
         let inner_op = op.clone();
         tokio::spawn(async move {
@@ -87,51 +82,30 @@ impl ChatClient {
                         println!("Socket error: {:?}", e);
                         break;
                     }
-                    Ok(message) => match message {
-                        Message::Text(text) => {
-                            inner_op.OnListen(text).await;
-                        }
-                        Message::Binary(msg) => {
-                            println!("Received binary message: {:02X?}", msg);
-                        }
-                        Message::Ping(msg) => {
-                            println!("Received ping message: {:02X?}", msg);
-                            inner_op.spawn().Send(Message::Pong(msg));
-                        }
-                        Message::Pong(_) => {
-                            let now = Instant::now();
-                            println!("receive pong at {:?}", now);
-                            inner_op.SetPong(now).await;
-                        }
-                        Message::Close(msg) => {
-                            if let Some(msg) = &msg {
-                                println!(
-                                    "Received close message with code {} and message: {}",
-                                    msg.code, msg.reason
-                                );
-                            } else {
-                                println!("Received close message");
-                            }
-                        }
-                        Message::Frame(_) => {
-                            unreachable!();
-                        }
-                    },
+                    Ok(message) => inner_op.OnMessageReceived(message).await,
                 }
             }
             println!("web socket ended");
             inner_op.Close().await;
         });
+
         // ping client
         let inner_op = op.clone();
         tokio::spawn(async move {
-            let mut interval = interval(PING_INTERVAL);
-            loop {
-                let instant = interval.tick().await;
-                if !inner_op.SendPing(instant).await {
-                    println!("client closed, stop sending ping");
-                    break;
+            async fn ping(op: CommandSender) {
+                let mut interval = interval(PING_INTERVAL);
+                loop {
+                    let instant = interval.tick().await;
+                    if !op.SendPing(instant).await {
+                        println!("client closed, stop sending ping");
+                        break;
+                    }
                 }
+            }
+
+            select! {
+                _ = ping_token.cancelled()  => {}
+                _ = ping(inner_op) => {}
             }
         });
 
@@ -147,20 +121,53 @@ pub struct ClientImpl {
     op: Option<CommandSender>,
     sink: SplitSink<HyperWebsocketStream, Message>,
     last_pong: Instant,
+    ping_token: CancellationToken,
     is_detached: bool,
     is_socket_closed: bool,
 }
 
 command! {
-    OnListen(text: String);
+    OnMessageReceived(message: Message);
     SendPing(instant: Instant) -> bool;
-    SetPong(now: Instant);
     pub Close();
     pub Send(message: Message);
     pub Leave();
 }
 
 impl ClientImpl {
+    async fn on_message_received(&mut self, message: Message) {
+        match message {
+            Message::Text(text) => {
+                self.on_listen(text);
+            }
+            Message::Binary(msg) => {
+                println!("Received binary message: {:02X?}", msg);
+            }
+            Message::Ping(msg) => {
+                println!("Received ping message: {:02X?}", msg);
+                self.send(Message::Pong(msg)).await;
+            }
+            Message::Pong(_) => {
+                let now = Instant::now();
+                println!("receive pong at {:?}", now);
+                self.last_pong = now;
+            }
+            Message::Close(msg) => {
+                if let Some(msg) = &msg {
+                    println!(
+                        "Received close message with code {} and message: {}",
+                        msg.code, msg.reason
+                    );
+                } else {
+                    println!("Received close message");
+                }
+            }
+            Message::Frame(_) => {
+                unreachable!();
+            }
+        }
+    }
+
     fn on_listen(&mut self, message: String) {
         println!("receive: {message}");
 
@@ -235,11 +242,17 @@ impl ClientImpl {
         }
     }
 
-    async fn send(&mut self, message: Message) -> Result<(), Error> {
+    async fn send(&mut self, message: Message) {
         if self.is_socket_closed || self.is_detached {
-            return Ok(());
+            return;
         }
-        self.sink.send(message).await
+        match self.sink.send(message).await {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("send ws failed: {:?}", e);
+                self.close().await;
+            }
+        }
     }
 
     fn leave(&mut self) {
@@ -264,7 +277,7 @@ impl ClientImpl {
         let responded = duration <= PING_INTERVAL * 2;
         if responded {
             println!("send ping at {:?}", instant);
-            let _ = self.send(Message::Ping(const { Vec::new() })).await;
+            self.send(Message::Ping(const { Vec::new() })).await;
         } else {
             println!(
                 "client `{}` not responded, closing",
@@ -279,6 +292,7 @@ impl ClientImpl {
         if !self.is_socket_closed {
             self.detach();
             self.is_socket_closed = true;
+            self.ping_token.cancel();
             // FIXME: WS do nothing if the stream was closed
             let _ = self.sink.close().await;
         }
