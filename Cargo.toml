@@ -3,8 +3,14 @@ name = "rust_chat"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# https://github.com/johnthagen/min-sized-rust#readme
+[profile.release]
+strip = true  # Automatically strip symbols from the binary.
+lto = true # Enable Link Time Optimization (LTO)
+codegen-units = 1 # Reduce Parallel Code Generation Units to Increase Optimization
+panic = "abort"
 
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 chrono = { version = "0.4.31", features = ["serde"] }
 serde_json = "1.0.107"
