@@ -20,7 +20,7 @@ mod service;
 
 #[tokio::main]
 async fn main() {
-    log!("app is running on DEBUG mode, you should not see it in the release build");
+    log!("warn: DEBUG mode");
     let addr = SocketAddr::from(([0, 0, 0, 0], PORT));
     let listener = TcpListener::bind(addr).await.unwrap();
     println!("service is running on: http://{addr}");

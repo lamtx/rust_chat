@@ -1,5 +1,6 @@
 use crate::misc::{Params, ParseParamError, QueryParams};
 
+#[derive(Debug)]
 pub struct LastAnnouncementParams {
     pub types: Vec<String>,
 }

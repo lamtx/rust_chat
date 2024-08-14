@@ -230,7 +230,7 @@ where
                 .iter()
                 .rfind(|x| x.textroom == Message::ANNOUNCEMENT && x.r#type == r#type);
             if let Some(text) = message {
-                result.insert(r#type, text.r#type.clone());
+                result.insert(r#type, text.text.clone());
             }
         }
 

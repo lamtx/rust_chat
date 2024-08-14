@@ -11,12 +11,16 @@ pub enum ParseParamError<'a> {
     FieldRequired { name: &'a str },
 }
 
+macro_rules! empty_vec {
+    () => {
+        const { Vec::new() }
+    };
+}
+
 impl<'a> QueryParams<'a> {
-    pub fn parse(s: Option<&'a str>) -> QueryParams<'a> {
-        match s {
-            None => QueryParams {
-                vec: const { Vec::new() },
-            },
+    pub fn parse(query: Option<&'a str>) -> QueryParams<'a> {
+        match query {
+            None => QueryParams { vec: empty_vec!() },
             Some(s) => QueryParams { vec: querify(s) },
         }
     }
@@ -25,7 +29,8 @@ impl<'a> QueryParams<'a> {
         self.vec
             .iter()
             .find(|(key, _)| key == &name)
-            .map(|(_, value)| decode_url(value))
+            .and_then(|(_, value)| decode(value).ok())
+            .map(|e| e.into_owned())
     }
 
     pub fn require<'b>(&self, name: &'b str) -> Result<String, ParseParamError<'b>> {
@@ -36,17 +41,15 @@ impl<'a> QueryParams<'a> {
     }
 
     pub fn get_list(&self, name: &str) -> Vec<String> {
-        let value = self.vec.iter().find(|(key, _)| key == &name);
-        match value {
-            None => const { Vec::new() },
-            Some((_, a)) => a.split(',').map(|e| decode_url(e)).collect(),
-        }
+        self.vec
+            .iter()
+            .find(|(key, _)| key == &name)
+            .and_then(|(_, a)| decode(a).ok())
+            .map_or_else(
+                || empty_vec!(),
+                |s| s.split(',').map(|e| e.to_owned()).collect(),
+            )
     }
-}
-
-#[inline]
-fn decode_url(value: &str) -> String {
-    decode(value).unwrap().into_owned()
 }
 
 pub trait Params {
