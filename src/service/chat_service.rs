@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::command;
-use crate::model::RoomInfo;
-use crate::service::{ChatRoom, Room, ServiceError};
+use crate::model::{Room, RoomInfo};
+use crate::service::{ChatRoom, ServiceError};
 
 command! {
     pub CreateRoom(room: Room) -> Result<(), ServiceError>;
@@ -19,7 +19,7 @@ pub struct ChatService {
 
 impl ChatService {
     pub fn create() -> ChatService {
-        let (tx, mut rx) = mpsc::channel::<Command>(30);
+        let (tx, mut rx) = mpsc::channel::<Command>(1);
         let op = CommandSender { tx };
         let app = ChatService { op: op.clone() };
         tokio::spawn(async move {

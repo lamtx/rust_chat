@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use futures::stream::{SplitSink, SplitStream};
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures::{sink::SinkExt, stream::StreamExt, TryStreamExt};
 use hyper_tungstenite::tungstenite::{Error, Message};
 use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
 use serde::Deserialize;
@@ -10,11 +10,11 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::{command, log};
 use crate::config::PING_INTERVAL;
 use crate::misc::OrEmpty;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
+use crate::{command, log};
 
 pub struct ChatClient {
     pub id: usize,
@@ -30,12 +30,12 @@ impl ChatClient {
         my_id: usize,
     ) -> Result<ChatClient, Error> {
         let (sink, stream) = socket.await?.split();
-        let (tx, mut rx) = mpsc::channel::<Command>(30);
+        let (tx, mut rx) = mpsc::channel::<Command>(1);
         let op = CommandSender { tx };
         let ping_token = CancellationToken::new();
         let socket_stream_token = CancellationToken::new();
         {
-            let mut state = ClientInner {
+            let mut state = Box::new(ClientInner {
                 room,
                 me: me.clone(),
                 my_id,
@@ -46,7 +46,7 @@ impl ChatClient {
                 ping_token: ping_token.clone(),
                 socket_stream_token: socket_stream_token.clone(),
                 sink,
-            };
+            });
             // command listener
             tokio::spawn(async move {
                 while let Some(command) = rx.recv().await {
@@ -97,14 +97,8 @@ impl ChatClient {
     }
 
     async fn listen_to_socket(mut stream: SplitStream<HyperWebsocketStream>, op: CommandSender) {
-        while let Some(message) = stream.next().await {
-            match message {
-                Err(e) => {
-                    log!("Socket error: {:?}", e);
-                    break;
-                }
-                Ok(message) => op.OnMessageReceived(message).await,
-            }
+        while let Some(message) = stream.try_next().await.ok().flatten() {
+            op.OnMessageReceived(message).await;
         }
         log!("web socket's stream ended");
         op.Close().await;
@@ -153,10 +147,7 @@ impl ClientInner {
             Message::Binary(msg) => {
                 log!("unexpected binary message: {:02X?}", msg);
             }
-            Message::Ping(msg) => {
-                log!("received ping message: {:02X?}", msg);
-                self.send(Message::Pong(msg)).await;
-            }
+            Message::Ping(_) => {}
             Message::Pong(_) => {
                 let now = Instant::now();
                 log!("received pong at {:?}", now);
@@ -166,7 +157,8 @@ impl ClientInner {
                 if let Some(msg) = &msg {
                     log!(
                         "received close message with code {} and message: {}",
-                        msg.code, msg.reason
+                        msg.code,
+                        msg.reason
                     );
                 } else {
                     log!("Received close message");
@@ -259,7 +251,7 @@ impl ClientInner {
         match self.sink.send(message).await {
             Ok(_) => {}
             Err(e) => {
-                eprintln!("send ws failed: {:?}", e);
+                log!("send ws failed: {:?}", e);
                 self.close().await;
             }
         }

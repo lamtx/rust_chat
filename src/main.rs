@@ -41,7 +41,7 @@ async fn main() {
                 .with_upgrades()
                 .await
             {
-                eprintln!("Error serving connection: {:?}", err);
+                log!("Error serving connection: {:?}", err);
             }
         });
     }

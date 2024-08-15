@@ -1,21 +1,18 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use chrono::Utc;
-use hyper::{Request, StatusCode};
-use hyper_tls::HttpsConnector;
 use hyper_tungstenite::tungstenite::error::ProtocolError;
 use hyper_tungstenite::tungstenite::Message as WsMessage;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use serde::Serialize;
 use tokio::sync::mpsc::channel;
 
 use crate::config::PORT;
 use crate::misc::*;
-use crate::model::{JoinParams, Message, Participant, RoomInfo, TextRoomEvent};
+use crate::model::{JoinParams, Message, Participant, Room, RoomInfo, TextRoomEvent};
 use crate::service::client_service::ChatClient;
-use crate::service::Room;
+use crate::service::rest_client::RestClient;
 use crate::{command, log};
 
 command! {
@@ -29,8 +26,6 @@ command! {
     pub GetNextId()  -> usize;
     pub LastAnnouncement(types: Vec<String>) -> HashMap<String, String>;
     pub Participants() -> Vec<Participant>;
-    /// Return the serialized json of all [Message] in this room.
-    pub AllMessages() -> String;
     pub Photo(username: String) -> Option<String>;
     pub SendMessage(sender: Participant, r#type: String, text: String);
     pub Destroy();
@@ -47,7 +42,7 @@ impl ChatRoom {
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        let (tx, mut rx) = channel::<Command>(30);
+        let (tx, mut rx) = channel::<Command>(1);
         let chat_room = ChatRoom {
             op: CommandSender { tx },
             secret: Arc::new(room.secret.clone()),
@@ -56,8 +51,10 @@ impl ChatRoom {
             let mut state = ChatRoomInner::new(room, on_room_detached);
             log!("`room {}` created", &state.room.uid);
             log!(
-                "Click here to destroy: http://127.0.0.1:{}{}/destroy?secret={}",
-                PORT, &state.room.uid, &state.room.secret
+                "To destroy: http://127.0.0.1:{}{}/destroy?secret={}",
+                PORT,
+                &state.room.uid,
+                &state.room.secret
             );
             state.post_created();
             while let Some(command) = rx.recv().await {
@@ -127,10 +124,6 @@ impl ChatRoom {
                     Command::Participants { resp_tx } => {
                         let _ = resp_tx.send(state.participants());
                     }
-                    Command::AllMessages { resp_tx } => {
-                        let json = serde_json::to_string(&state.messages).unwrap();
-                        let _ = resp_tx.send(json);
-                    }
                     Command::Photo { username, resp_tx } => {
                         let photo = state.photos.get(&username).map(|e| e.to_owned());
                         let _ = resp_tx.send(photo);
@@ -164,7 +157,7 @@ impl ChatRoom {
                         this.op.AddClient(client, params.image_url).await;
                     }
                     Err(e) => {
-                        eprintln!("create client failed: {:?}", e);
+                        log!("create client failed: {:?}", e);
                     }
                 }
             });
@@ -182,9 +175,13 @@ where
     F: Fn(String),
 {
     room: Room,
-    messages: Vec<Message>,
     clients: Vec<ChatClient>,
     photos: HashMap<String, String>,
+    last_announcements: HashMap<String, String>,
+    rest_client: Option<RestClient>,
+    // cache value from [self.room.name()]
+    room_name: String,
+    messages: usize,
     next_id: usize,
     detached: bool,
     on_room_detached: F,
@@ -195,14 +192,21 @@ where
     F: Fn(String),
 {
     fn new(room: Room, on_room_detached: F) -> Self {
+        let rest_client = match &room.post {
+            None => None,
+            Some(post) => Some(RestClient::create(post.clone())),
+        };
         ChatRoomInner {
+            room_name: room.name().to_string(),
             room,
             clients: Vec::new(),
-            messages: Vec::new(),
+            last_announcements: HashMap::new(),
             photos: HashMap::new(),
             next_id: 0,
+            messages: 0,
             detached: false,
             on_room_detached,
+            rest_client,
         }
     }
 
@@ -210,7 +214,7 @@ where
         RoomInfo {
             room: self.room.uid.clone(),
             participants: self.clients.iter().map(|e| e.me.clone()).collect(),
-            messages: self.messages.len(),
+            messages: self.messages,
         }
     }
 
@@ -225,12 +229,8 @@ where
     fn last_announcement(&self, types: Vec<String>) -> HashMap<String, String> {
         let mut result = HashMap::new();
         for r#type in types {
-            let message = self
-                .messages
-                .iter()
-                .rfind(|x| x.textroom == Message::ANNOUNCEMENT && x.r#type == r#type);
-            if let Some(text) = message {
-                result.insert(r#type, text.text.clone());
+            if let Some(announcement) = self.last_announcements.get(&r#type) {
+                result.insert(r#type, announcement.clone());
             }
         }
 
@@ -273,18 +273,19 @@ where
             text: &text,
             r#type: &r#type,
         });
+        self.messages += 1;
 
-        let message = Message {
-            room: self.room.name().to_string(),
-            textroom: Message::MESSAGE,
-            r#type,
-            text,
-            date: now,
-            from: username,
-        };
-
-        self.post(&message, true);
-        self.messages.push(message);
+        self.post(
+            &Message {
+                room: &self.room_name,
+                textroom: Message::MESSAGE,
+                r#type: &r#type,
+                text: &text,
+                date: now,
+                from: &username,
+            },
+            true,
+        );
     }
     fn announce(&mut self, sender: Participant, r#type: String, text: String) {
         let now = Utc::now();
@@ -293,17 +294,19 @@ where
             text: &text,
             r#type: &r#type,
         });
+        self.messages += 1;
 
-        let message = Message {
-            room: self.room.name().to_string(),
-            textroom: Message::ANNOUNCEMENT,
-            r#type,
-            text,
-            date: now,
-            from: sender.username.unwrap(),
-        };
-        self.post(&message, true);
-        self.messages.push(message);
+        self.post(
+            &Message {
+                room: &self.room_name,
+                textroom: Message::ANNOUNCEMENT,
+                r#type: &r#type,
+                text: &text,
+                date: now,
+                from: &sender.username.unwrap(),
+            },
+            true,
+        );
     }
 
     fn ban(&self, from: Option<String>, victim: String) {
@@ -320,47 +323,33 @@ where
         self.post(
             &Message {
                 textroom: Message::MODERATE,
-                room: self.room.name().to_string(),
+                room: &self.room_name,
                 r#type: Message::TYPE_BAN.into(),
-                text: victim,
+                text: &victim,
                 date: Utc::now(),
-                from: from.unwrap_or_default(),
+                from: from.or_empty(),
             },
             false,
         );
     }
 
     fn post_created(&self) {
-        self.post(&Message::room_created(self.room.name().to_string()), false);
+        self.post(&Message::room_created(&self.room_name), false);
     }
 
     fn post(&self, message: &Message, should_check_type: bool) {
-        if self.room.post.is_none() {
-            return;
-        }
-        if should_check_type && !self.room.post_types.contains(&message.r#type) {
-            return;
-        }
-        let request = Request::builder()
-            .uri(self.room.post.as_ref().unwrap())
-            .method("POST")
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_string(message).unwrap())
-            .unwrap();
-        let https = HttpsConnector::new();
-        let client = Client::builder(TokioExecutor::new()).build(https);
-        tokio::spawn(async move {
-            match client.request(request).await {
-                Ok(response) => {
-                    if response.status() != StatusCode::OK {
-                        eprintln!("posted failed, status code:{}", response.status());
-                    }
-                }
-                Err(e) => {
-                    eprintln!("posted error: {:?}", e);
-                }
+        if let Some(rest_client) = &self.rest_client {
+            if should_check_type
+                && !self
+                    .room
+                    .post_types
+                    .iter()
+                    .any(|e| e.deref() == message.r#type)
+            {
+                return;
             }
-        });
+            rest_client.spawn_post(message);
+        }
     }
 
     fn broadcast_json<T: Serialize>(&self, body: &T) {
@@ -380,14 +369,11 @@ where
             self.broadcast_json(&TextRoomEvent::Destroyed);
             self.clients.clear();
             (self.on_room_detached)(self.room.uid.clone());
-            log!("room `{}` destroyed", self.room.name())
+            log!("room `{}` destroyed", self.room_name)
         }
     }
     fn destroy(&mut self) {
         self.detach();
-        self.post(
-            &Message::room_destroyed(self.room.name().to_string()),
-            false,
-        )
+        self.post(&Message::room_destroyed(&self.room_name), false)
     }
 }

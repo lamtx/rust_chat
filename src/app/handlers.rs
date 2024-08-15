@@ -8,8 +8,10 @@ use serde_json::json;
 use crate::app::app_error::{AppError, ToBadRequest};
 use crate::app::common_errors::not_found;
 use crate::misc::{empty_body, ok_response, HttpRequest, HttpResponse, Params, StringExt};
-use crate::model::{CreateParams, DestroyParams, JoinParams, LastAnnouncementParams, PhotoParams};
-use crate::service::{ChatService, Room};
+use crate::model::{
+    CreateParams, DestroyParams, JoinParams, LastAnnouncementParams, PhotoParams, Room,
+};
+use crate::service::ChatService;
 use crate::{json_response, log};
 
 pub async fn default_handler(
@@ -121,10 +123,6 @@ async fn room_action(
         "participants" => {
             let participants = chat_room.op.Participants().await;
             Ok(json_response!(participants))
-        }
-        "messages" => {
-            let messages = chat_room.op.AllMessages().await;
-            Ok(json_response(messages))
         }
         "photo" => {
             let params = PhotoParams::parse_uri(req.uri()).to_bad_request()?;
