@@ -307,6 +307,8 @@ where
             },
             true,
         );
+
+        self.last_announcements.insert(r#type, text);
     }
 
     fn ban(&self, from: Option<String>, victim: String) {
