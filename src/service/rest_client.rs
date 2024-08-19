@@ -1,14 +1,15 @@
-use bytes::BufMut;
-use http_body_util::BodyExt;
-use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
-use hyper_tls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
-use serde::Serialize;
 use std::io::Write;
 use std::sync::Arc;
+
+use bytes::BufMut;
+use http_body_util::BodyExt;
+use hyper::{Request, Response, StatusCode};
+use hyper::body::Incoming;
+use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::TokioExecutor;
+use serde::Serialize;
 
 use crate::log;
 

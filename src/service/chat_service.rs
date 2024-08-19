@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use tokio::sync::mpsc;
-
 use crate::command;
 use crate::model::{Room, RoomInfo};
 use crate::service::{ChatRoom, ServiceError};
@@ -19,7 +17,7 @@ pub struct ChatService {
 
 impl ChatService {
     pub fn create() -> ChatService {
-        let (tx, mut rx) = mpsc::channel::<Command>(1);
+        let (tx, mut rx) = Command::new_channel();
         let op = CommandSender { tx };
         let app = ChatService { op: op.clone() };
         tokio::spawn(async move {

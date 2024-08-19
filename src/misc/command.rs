@@ -53,5 +53,11 @@ macro_rules! command {
                 SpawnCommandSender {tx: self.tx.clone() }
             }
         }
+        
+        impl Command {
+            pub fn new_channel() -> (tokio::sync::mpsc::Sender<Command>, tokio::sync::mpsc::Receiver<Command>) {
+                tokio::sync::mpsc::channel(30)
+            }
+        }
     };
 }

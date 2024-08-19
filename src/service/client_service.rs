@@ -1,20 +1,18 @@
 use std::ops::Deref;
 
-use futures::stream::{SplitSink, SplitStream};
 use futures::{sink::SinkExt, stream::StreamExt, TryStreamExt};
-use hyper_tungstenite::tungstenite::{Error, Message};
+use futures::stream::{SplitSink, SplitStream};
 use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
+use hyper_tungstenite::tungstenite::{Error, Message};
 use serde::Deserialize;
 use tokio::select;
-use tokio::sync::mpsc;
-use tokio::time::{interval, Instant};
+use tokio::time::{Instant, interval};
 use tokio_util::sync::CancellationToken;
 
+use crate::{command, log};
 use crate::config::PING_INTERVAL;
-use crate::misc::OrEmpty;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
-use crate::{command, log};
 
 pub struct ChatClient {
     pub id: usize,
@@ -30,7 +28,7 @@ impl ChatClient {
         my_id: usize,
     ) -> Result<ChatClient, Error> {
         let (sink, stream) = socket.await?.split();
-        let (tx, mut rx) = mpsc::channel::<Command>(1);
+        let (tx, mut rx) = Command::new_channel();
         let op = CommandSender { tx };
         let ping_token = CancellationToken::new();
         let socket_stream_token = CancellationToken::new();

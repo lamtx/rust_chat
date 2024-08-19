@@ -6,14 +6,12 @@ use chrono::Utc;
 use hyper_tungstenite::tungstenite::error::ProtocolError;
 use hyper_tungstenite::tungstenite::Message as WsMessage;
 use serde::Serialize;
-use tokio::sync::mpsc::channel;
 
-use crate::config::PORT;
+use crate::{command, log};
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, Room, RoomInfo, TextRoomEvent};
 use crate::service::client_service::ChatClient;
 use crate::service::rest_client::RestClient;
-use crate::{command, log};
 
 command! {
     pub Status() -> RoomInfo;
@@ -42,7 +40,7 @@ impl ChatRoom {
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        let (tx, mut rx) = channel::<Command>(1);
+        let (tx, mut rx) = Command::new_channel();
         let chat_room = ChatRoom {
             op: CommandSender { tx },
             secret: Arc::new(room.secret.clone()),

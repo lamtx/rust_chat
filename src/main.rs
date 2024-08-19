@@ -18,7 +18,7 @@ mod app;
 mod config;
 mod service;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     log!("warn: DEBUG mode");
     let addr = SocketAddr::from(([0, 0, 0, 0], PORT));

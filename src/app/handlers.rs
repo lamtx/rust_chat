@@ -4,15 +4,16 @@ use std::ops::Deref;
 use http_body_util::Full;
 use hyper::Response;
 use serde_json::json;
+use tokio::runtime::Handle;
 
+use crate::{json_response, log};
 use crate::app::app_error::{AppError, ToBadRequest};
 use crate::app::common_errors::not_found;
-use crate::misc::{empty_body, ok_response, HttpRequest, HttpResponse, Params, StringExt};
+use crate::misc::{empty_body, HttpRequest, HttpResponse, ok_response, Params, StringExt};
 use crate::model::{
     CreateParams, DestroyParams, JoinParams, LastAnnouncementParams, PhotoParams, Room,
 };
 use crate::service::ChatService;
-use crate::{json_response, log};
 
 pub async fn default_handler(
     service: &ChatService,
@@ -56,6 +57,17 @@ pub async fn handle_request(
                 Ok(dump_status(service, req).await)
             } else {
                 room_action(service, req, room, action).await
+            }
+        }
+        "debug" => {
+            if room.is_empty() {
+                let metrics = Handle::current().metrics().num_alive_tasks();
+
+                Ok(json_response!({
+                    "tasks": metrics
+                }))
+            } else {
+                not_found()
             }
         }
         &_ => room_action(service, req, room, action).await,
