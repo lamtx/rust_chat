@@ -6,7 +6,6 @@ macro_rules! command {
            $vis:vis $name:ident($($param:ident: $input:ty),*) $(-> $output:ty)?;
         )+
     ) => {
-        #[warn(unused_parens)]
         pub enum Command {
         $(
             $(#[$docs])*
@@ -53,10 +52,11 @@ macro_rules! command {
                 SpawnCommandSender {tx: self.tx.clone() }
             }
         }
-        
+
         impl Command {
-            pub fn new_channel() -> (tokio::sync::mpsc::Sender<Command>, tokio::sync::mpsc::Receiver<Command>) {
-                tokio::sync::mpsc::channel(30)
+            pub fn new_channel() -> (CommandSender, tokio::sync::mpsc::Receiver<Command>) {
+                let (tx, rx) = tokio::sync::mpsc::channel(30);
+                (CommandSender {tx}, rx)
             }
         }
     };

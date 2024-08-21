@@ -5,12 +5,12 @@ use futures::stream::{SplitSink, SplitStream};
 use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
 use hyper_tungstenite::tungstenite::{Error, Message};
 use serde::Deserialize;
-use tokio::select;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, interval};
-use tokio_util::sync::CancellationToken;
 
 use crate::{command, log};
 use crate::config::PING_INTERVAL;
+use crate::misc::OrEmpty;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
 
@@ -28,89 +28,79 @@ impl ChatClient {
         my_id: usize,
     ) -> Result<ChatClient, Error> {
         let (sink, stream) = socket.await?.split();
-        let (tx, mut rx) = Command::new_channel();
-        let op = CommandSender { tx };
-        let ping_token = CancellationToken::new();
-        let socket_stream_token = CancellationToken::new();
-        {
-            let mut state = Box::new(ClientInner {
-                room,
-                me: me.clone(),
-                my_id,
-                op: Some(op.clone()),
-                is_detached: false,
-                is_socket_closed: false,
-                last_pong: Instant::now(),
-                ping_token: ping_token.clone(),
-                socket_stream_token: socket_stream_token.clone(),
-                sink,
-            });
-            // command listener
-            tokio::spawn(async move {
-                while let Some(command) = rx.recv().await {
-                    match command {
-                        Command::OnMessageReceived { message, resp_tx } => {
-                            state.on_message_received(message).await;
-                            let _ = resp_tx.send(());
-                        }
-                        Command::Send { message, resp_tx } => {
-                            state.send(message).await;
-                            let _ = resp_tx.send(());
-                        }
-                        Command::Leave { resp_tx } => {
-                            state.leave();
-                            let _ = resp_tx.send(());
-                        }
-                        Command::Close { resp_tx } => {
-                            state.close().await;
-                            let _ = resp_tx.send(());
-                        }
-                        Command::SendPing { instant, resp_tx } => {
-                            let _ = resp_tx.send(state.send_ping(instant).await);
-                        }
+        let (op, mut rx) = Command::new_channel();
+        let socket_stream_token = Self::listen_to_socket(&op, stream);
+        let ping_token = Self::ping_repeatedly(&op);
+
+        let mut state = Box::new(ClientInner {
+            room,
+            me: me.clone(),
+            my_id,
+            op: Some(op.clone()),
+            is_detached: false,
+            is_socket_closed: false,
+            last_pong: Instant::now(),
+            ping_token,
+            socket_stream_token,
+            sink,
+        });
+        // command listener
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                match command {
+                    Command::OnMessageReceived { message, resp_tx } => {
+                        state.on_message_received(message).await;
+                        let _ = resp_tx.send(());
+                    }
+                    Command::Send { message, resp_tx } => {
+                        state.send(message).await;
+                        let _ = resp_tx.send(());
+                    }
+                    Command::Leave { resp_tx } => {
+                        state.leave();
+                        let _ = resp_tx.send(());
+                    }
+                    Command::Close { resp_tx } => {
+                        state.close().await;
+                        let _ = resp_tx.send(());
+                    }
+                    Command::SendPing { instant, resp_tx } => {
+                        let _ = resp_tx.send(state.send_ping(instant).await);
                     }
                 }
-                log!("client `{}` dropped", state.me.display.or_empty())
-            });
-        }
-        // listening to ws stream
-        let inner_op = op.clone();
-        tokio::spawn(async move {
-            select! {
-                _ = Self::listen_to_socket(stream, inner_op) => {}
-                _ = socket_stream_token.cancelled() => {}
             }
-        });
-
-        // ping client
-        let inner_op = op.clone();
-        tokio::spawn(async move {
-            select! {
-                _ = Self::ping_repeatedly(inner_op) => {}
-                _ = ping_token.cancelled() => {}
-            }
+            log!("client `{}` dropped", state.me.display.or_empty())
         });
 
         Ok(ChatClient { id: my_id, op, me })
     }
 
-    async fn listen_to_socket(mut stream: SplitStream<HyperWebsocketStream>, op: CommandSender) {
-        while let Some(message) = stream.try_next().await.ok().flatten() {
-            op.OnMessageReceived(message).await;
-        }
-        log!("web socket's stream ended");
-        op.Close().await;
+    fn listen_to_socket(
+        op: &CommandSender,
+        mut stream: SplitStream<HyperWebsocketStream>,
+    ) -> JoinHandle<()> {
+        let op = op.clone();
+        tokio::spawn(async move {
+            while let Some(message) = stream.try_next().await.ok().flatten() {
+                op.OnMessageReceived(message).await;
+            }
+            log!("web socket's stream ended");
+            op.Close().await;
+        })
     }
 
-    async fn ping_repeatedly(op: CommandSender) {
-        let mut interval = interval(PING_INTERVAL);
-        loop {
-            let instant = interval.tick().await;
-            if !op.SendPing(instant).await {
-                log!("client closed, stop sending ping");
-                break;
+    fn ping_repeatedly(op: &CommandSender) -> JoinHandle<()> {
+        let op = op.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(PING_INTERVAL);
+            loop {
+                let instant = interval.tick().await;
+                if !op.SendPing(instant).await {
+                    log!("client closed, stop sending ping");
+                    break;
+                }
             }
-        }
+        })
     }
 }
 
@@ -122,8 +112,8 @@ pub struct ClientInner {
     op: Option<CommandSender>,
     sink: SplitSink<HyperWebsocketStream, Message>,
     last_pong: Instant,
-    ping_token: CancellationToken,
-    socket_stream_token: CancellationToken,
+    ping_token: JoinHandle<()>,
+    socket_stream_token: JoinHandle<()>,
     is_detached: bool,
     is_socket_closed: bool,
 }
@@ -162,9 +152,7 @@ impl ClientInner {
                     log!("Received close message");
                 }
             }
-            Message::Frame(_) => {
-                unreachable!();
-            }
+            Message::Frame(_) => {}
         }
     }
 
@@ -246,7 +234,15 @@ impl ClientInner {
         if self.is_socket_closed || self.is_detached {
             return;
         }
-        match self.sink.send(message).await {
+        async fn send_and_flush(
+            sink: &mut SplitSink<HyperWebsocketStream, Message>,
+            message: Message,
+        ) -> Result<(), Error> {
+            sink.send(message).await?;
+            sink.flush().await?;
+            Ok(())
+        }
+        match send_and_flush(&mut self.sink, message).await {
             Ok(_) => {}
             Err(e) => {
                 log!("send ws failed: {:?}", e);
@@ -292,8 +288,8 @@ impl ClientInner {
         if !self.is_socket_closed {
             self.detach();
             self.is_socket_closed = true;
-            self.ping_token.cancel();
-            self.socket_stream_token.cancel();
+            self.ping_token.abort();
+            self.socket_stream_token.abort();
             let _ = self.sink.close().await;
         }
     }

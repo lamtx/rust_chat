@@ -17,8 +17,7 @@ pub struct ChatService {
 
 impl ChatService {
     pub fn create() -> ChatService {
-        let (tx, mut rx) = Command::new_channel();
-        let op = CommandSender { tx };
+        let (op, mut rx) = Command::new_channel();
         let app = ChatService { op: op.clone() };
         tokio::spawn(async move {
             use Command::*;

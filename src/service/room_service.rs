@@ -7,11 +7,12 @@ use hyper_tungstenite::tungstenite::error::ProtocolError;
 use hyper_tungstenite::tungstenite::Message as WsMessage;
 use serde::Serialize;
 
-use crate::{command, log};
+use crate::config::PORT;
 use crate::misc::*;
 use crate::model::{JoinParams, Message, Participant, Room, RoomInfo, TextRoomEvent};
 use crate::service::client_service::ChatClient;
 use crate::service::rest_client::RestClient;
+use crate::{command, log};
 
 command! {
     pub Status() -> RoomInfo;
@@ -40,9 +41,9 @@ impl ChatRoom {
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        let (tx, mut rx) = Command::new_channel();
+        let (op, mut rx) = Command::new_channel();
         let chat_room = ChatRoom {
-            op: CommandSender { tx },
+            op,
             secret: Arc::new(room.secret.clone()),
         };
         tokio::spawn(async move {
