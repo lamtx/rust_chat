@@ -108,7 +108,7 @@ impl ChatRoom {
                     }
                     Command::RemoveClient { id, resp_tx } => {
                         if !state.clients.is_empty() {
-                            state.clients.retain(|e| e.id != id);
+                            state.clients.remove(&id);
                             log!("client id:{id} detached (size: {})", state.clients.len());
                         }
                         let _ = resp_tx.send(());
@@ -174,7 +174,7 @@ where
     F: Fn(String),
 {
     room: Room,
-    clients: Vec<ChatClient>,
+    clients: HashMap<usize, ChatClient>,
     photos: HashMap<String, String>,
     last_announcements: HashMap<String, String>,
     rest_client: Option<RestClient>,
@@ -198,7 +198,7 @@ where
         ChatRoomInner {
             room_name: room.name().to_string(),
             room,
-            clients: Vec::new(),
+            clients: HashMap::new(),
             last_announcements: HashMap::new(),
             photos: HashMap::new(),
             next_id: 0,
@@ -212,7 +212,7 @@ where
     fn status(&self) -> RoomInfo {
         RoomInfo {
             room: self.room.uid.clone(),
-            participants: self.clients.iter().map(|e| e.me.clone()).collect(),
+            participants: self.clients.iter().map(|(_, e)| e.me.clone()).collect(),
             messages: self.messages,
         }
     }
@@ -222,7 +222,7 @@ where
     }
 
     fn participants(&self) -> Vec<Participant> {
-        self.clients.iter().map(|e| e.me.clone()).collect()
+        self.clients.iter().map(|(_, e)| e.me.clone()).collect()
     }
 
     fn last_announcement(&self, types: Vec<String>) -> HashMap<String, String> {
@@ -236,7 +236,7 @@ where
         result
     }
 
-    fn add_client(&mut self, client: ChatClient, image_url: Option<String>) {
+    fn add_client(&mut self, id: usize, client: ChatClient, image_url: Option<String>) {
         if client.me.username.is_some() && image_url.is_some() {
             self.photos
                 .insert(client.me.username.clone().unwrap(), image_url.unwrap());
@@ -251,11 +251,11 @@ where
         log!(
             "'{}' joined (id: {}, count:{})",
             participant.display.or_empty(),
-            client.id,
+            id,
             self.clients.len() + 1
         );
 
-        self.clients.push(client);
+        self.clients.insert(id, client);
     }
     fn send_message(&mut self, sender: Participant, r#type: String, text: String) {
         if sender.username.is_none() || sender.display.is_none() {
@@ -315,9 +315,9 @@ where
         let victims = self
             .clients
             .iter()
-            .filter(|&e| e.me.username.contains(&victim));
+            .filter(|(_, e)| e.me.username.contains(&victim));
         let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
-        for client in victims {
+        for (_, client) in victims {
             client.op.spawn().Send(WsMessage::Text(event.clone()));
             client.op.spawn().Leave();
         }
@@ -359,7 +359,7 @@ where
     }
 
     fn broadcast(&self, body: String) {
-        for client in &self.clients {
+        for (_, client) in &self.clients {
             client.op.spawn().Send(WsMessage::Text(body.clone()))
         }
     }

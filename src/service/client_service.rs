@@ -1,21 +1,20 @@
 use std::ops::Deref;
 
-use futures::{sink::SinkExt, stream::StreamExt, TryStreamExt};
 use futures::stream::{SplitSink, SplitStream};
-use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
+use futures::{sink::SinkExt, stream::StreamExt, TryStreamExt};
 use hyper_tungstenite::tungstenite::{Error, Message};
+use hyper_tungstenite::{HyperWebsocket, HyperWebsocketStream};
 use serde::Deserialize;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, interval};
+use tokio::time::{interval, Instant};
 
-use crate::{command, log};
 use crate::config::PING_INTERVAL;
 use crate::misc::OrEmpty;
 use crate::model::{Participant, TextRoomEvent, TextRoomRequest, TextRoomResponse};
 use crate::service::ChatRoom;
+use crate::{command, log};
 
 pub struct ChatClient {
-    pub id: usize,
     pub me: Participant,
     pub op: CommandSender,
 }
@@ -72,7 +71,7 @@ impl ChatClient {
             log!("client `{}` dropped", state.me.display.or_empty())
         });
 
-        Ok(ChatClient { id: my_id, op, me })
+        Ok(ChatClient { op, me })
     }
 
     fn listen_to_socket(

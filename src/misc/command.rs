@@ -6,6 +6,7 @@ macro_rules! command {
            $vis:vis $name:ident($($param:ident: $input:ty),*) $(-> $output:ty)?;
         )+
     ) => {
+        #[allow(unused_parens)]
         pub enum Command {
         $(
             $(#[$docs])*
@@ -21,6 +22,7 @@ macro_rules! command {
         }
         impl CommandSender {
         $(
+            #[allow(non_snake_case,unused)]
             $vis async fn $name (&self, $($param: $input,)*) $(-> $output)? {
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                 let data = Command::$name{$($param,)* resp_tx};
@@ -32,9 +34,9 @@ macro_rules! command {
         pub struct SpawnCommandSender {
             tx: tokio::sync::mpsc::Sender<Command>,
         }
-
         impl SpawnCommandSender {
         $(
+            #[allow(non_snake_case,unused)]
             $vis fn $name (self, $($param: $input,)*) {
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                 let data = Command::$name{$($param,)* resp_tx};
