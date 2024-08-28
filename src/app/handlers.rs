@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::ops::Deref;
 
 use http_body_util::Full;
 use hyper::Response;
@@ -52,6 +51,14 @@ pub async fn handle_request(
                 create_room(service, req, room, params).await
             }
         }
+        "destroy" => {
+            if room.is_empty() {
+                not_found()
+            } else {
+                let params = DestroyParams::parse_uri(req.uri()).to_bad_request()?;
+                destroy_room(service, req, room, params).await
+            }
+        }
         "status" => {
             if room.is_empty() {
                 Ok(dump_status(service, req).await)
@@ -94,13 +101,27 @@ async fn create_room(
     Ok(ok_response())
 }
 
+/// matches /path/to/room/destroy
+async fn destroy_room(
+    service: &ChatService,
+    _: HttpRequest,
+    room: String,
+    params: DestroyParams,
+) -> Result<HttpResponse, AppError> {
+    service
+        .op
+        .DestroyRoom(room, params.secret)
+        .await
+        .to_bad_request()?;
+    Ok(ok_response())
+}
 /// matches /status
 async fn dump_status(service: &ChatService, _: HttpRequest) -> HttpResponse {
     let status = service.op.Status().await;
     json_response!(status)
 }
 
-/// matches /path/to/room/action
+/// matches /path/to/room/other_action
 async fn room_action(
     service: &ChatService,
     req: HttpRequest,
@@ -113,15 +134,6 @@ async fn room_action(
         "join" => {
             let params = JoinParams::parse_uri(req.uri()).to_bad_request()?;
             chat_room.join(req, params).await.to_bad_request()
-        }
-        "destroy" => {
-            let params = DestroyParams::parse_uri(req.uri()).to_bad_request()?;
-            if &params.secret == chat_room.secret.deref() {
-                chat_room.op.spawn().Destroy();
-                Ok(ok_response())
-            } else {
-                Err(AppError::secret())
-            }
         }
         "count" => Ok(json_response!({
             "count": chat_room.op.Count().await,

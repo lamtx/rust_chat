@@ -49,6 +49,7 @@ impl<T> ToBadRequest<T> for Result<T, ServiceError> {
     fn to_bad_request(self) -> Result<T, AppError> {
         self.map_err(|e| match e {
             ServiceError::RoomNotFound => AppError::not_found("Room not found".to_string()),
+            ServiceError::SecretNotMatch => AppError::secret(),
         })
     }
 }

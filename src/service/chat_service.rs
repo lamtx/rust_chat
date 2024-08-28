@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 
 use crate::command;
 use crate::model::{Room, RoomInfo};
@@ -8,7 +9,7 @@ command! {
     pub CreateRoom(room: Room) -> Result<(), ServiceError>;
     pub Status()  -> Vec<RoomInfo>;
     pub GetRoom(room: String) -> Result<ChatRoom, ServiceError>;
-    pub DetachRoom(room: String);
+    pub DestroyRoom(room: String, secret: String) -> Result<(), ServiceError>;
 }
 
 pub struct ChatService {
@@ -26,20 +27,20 @@ impl ChatService {
             while let Some(command) = rx.recv().await {
                 match command {
                     CreateRoom { room, resp_tx } => {
-                        let result = state.create_room(room, &op);
-                        let _ = resp_tx.send(result);
+                        let _ = resp_tx.send(state.create_room(room));
                     }
                     Status { resp_tx } => {
-                        let result = state.status().await;
-                        let _ = resp_tx.send(result);
+                        let _ = resp_tx.send(state.status().await);
                     }
                     GetRoom { room, resp_tx } => {
-                        let result = state.get_room(&room);
-                        let _ = resp_tx.send(result);
+                        let _ = resp_tx.send(state.get_room(&room));
                     }
-                    DetachRoom { room, resp_tx } => {
-                        state.detach_room(room);
-                        let _ = resp_tx.send(());
+                    DestroyRoom {
+                        room,
+                        secret,
+                        resp_tx,
+                    } => {
+                        let _ = resp_tx.send(state.destroy_room(room, secret));
                     }
                 }
             }
@@ -63,13 +64,12 @@ impl ChatServiceInner {
         result
     }
 
-    fn create_room(&mut self, room: Room, op: &CommandSender) -> Result<(), ServiceError> {
+    fn create_room(&mut self, room: Room) -> Result<(), ServiceError> {
         if self.rooms.contains_key(&room.uid) {
             Err(ServiceError::RoomNotFound)
         } else {
             let uid = room.uid.clone();
-            let op = op.clone();
-            let chat_room = ChatRoom::create(room, move |uid| op.spawn().DetachRoom(uid));
+            let chat_room = ChatRoom::create(room);
             self.rooms.insert(uid, chat_room);
             Ok(())
         }
@@ -83,7 +83,17 @@ impl ChatServiceInner {
         }
     }
 
-    fn detach_room(&mut self, uid: String) {
-        self.rooms.remove(&uid);
+    fn destroy_room(&mut self, uid: String, secret: String) -> Result<(), ServiceError> {
+        if let Some(room) = self.rooms.get(&uid) {
+            if room.secret.deref() == &secret {
+                room.op.spawn().Destroy();
+                self.rooms.remove(&uid);
+                Ok(())
+            } else {
+                Err(ServiceError::SecretNotMatch)
+            }
+        } else {
+            Err(ServiceError::RoomNotFound)
+        }
     }
 }

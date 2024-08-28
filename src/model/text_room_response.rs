@@ -33,18 +33,4 @@ impl TextRoomResponse {
             error: "Secret does not match.".to_string(),
         }
     }
-
-    pub fn room_destroyed(transaction: Option<String>) -> TextRoomResponse {
-        TextRoomResponse::Error {
-            transaction,
-            error: "Room was destroyed.".to_string(),
-        }
-    }
-
-    pub fn room_id(transaction: Option<String>) -> TextRoomResponse {
-        TextRoomResponse::Error {
-            transaction,
-            error: "Not in this room.".to_string(),
-        }
-    }
 }

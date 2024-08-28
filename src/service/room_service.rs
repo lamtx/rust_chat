@@ -1,33 +1,34 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
+use futures::{StreamExt, TryStreamExt};
 use hyper_tungstenite::tungstenite::error::ProtocolError;
 use hyper_tungstenite::tungstenite::Message as WsMessage;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::{command, log};
 use crate::config::PORT;
 use crate::misc::*;
-use crate::model::{JoinParams, Message, Participant, Room, RoomInfo, TextRoomEvent};
+use crate::model::{
+    JoinParams, Message, Participant, Room, RoomInfo, TextRoomEvent, TextRoomRequest,
+    TextRoomResponse,
+};
 use crate::service::client_service::ChatClient;
 use crate::service::rest_client::RestClient;
-use crate::{command, log};
 
 command! {
     pub Status() -> RoomInfo;
     pub Count() -> usize;
-    pub AddClient(client: ChatClient, image_url: Option<String>);
-    pub RemoveClient(id: usize);
-    pub Announce(sender: Participant, r#type: String, text: String);
-    pub Ban(from: Option<String>, victim: String);
-    pub Broadcast(message: String);
-    pub GetNextId()  -> usize;
+    pub Join(sink: WebSocketSink, params: JoinParams) -> usize;
     pub LastAnnouncement(types: Vec<String>) -> HashMap<String, String>;
     pub Participants() -> Vec<Participant>;
     pub Photo(username: String) -> Option<String>;
-    pub SendMessage(sender: Participant, r#type: String, text: String);
     pub Destroy();
+    OnMessageReceived(sender_id:usize, message: WsMessage);
+    Leave(id: usize);
 }
 
 #[derive(Clone)]
@@ -37,17 +38,14 @@ pub struct ChatRoom {
 }
 
 impl ChatRoom {
-    pub fn create<F>(room: Room, on_room_detached: F) -> ChatRoom
-    where
-        F: Fn(String) + Send + Sync + 'static,
-    {
+    pub fn create(room: Room) -> ChatRoom {
         let (op, mut rx) = Command::new_channel();
         let chat_room = ChatRoom {
             op,
             secret: Arc::new(room.secret.clone()),
         };
         tokio::spawn(async move {
-            let mut state = ChatRoomInner::new(room, on_room_detached);
+            let mut state = ChatRoomInner::new(room);
             log!("`room {}` created", &state.room.uid);
             log!(
                 "To destroy: http://127.0.0.1:{}{}/destroy?secret={}",
@@ -64,53 +62,15 @@ impl ChatRoom {
                     Command::Count { resp_tx } => {
                         let _ = resp_tx.send(state.count());
                     }
-                    Command::AddClient {
-                        client,
-                        image_url,
+                    Command::Join {
+                        sink,
+                        params,
                         resp_tx,
                     } => {
-                        state.add_client(client, image_url);
-                        let _ = resp_tx.send(());
+                        let _ = resp_tx.send(state.join(sink, params));
                     }
-                    Command::Announce {
-                        sender,
-                        r#type,
-                        text,
-                        resp_tx,
-                    } => {
-                        state.announce(sender, r#type, text);
-                        let _ = resp_tx.send(());
-                    }
-                    Command::SendMessage {
-                        sender,
-                        r#type,
-                        text,
-                        resp_tx,
-                    } => {
-                        state.send_message(sender, r#type, text);
-                        let _ = resp_tx.send(());
-                    }
-                    Command::Ban {
-                        from,
-                        victim,
-                        resp_tx,
-                    } => {
-                        state.ban(from, victim);
-                        let _ = resp_tx.send(());
-                    }
-                    Command::Broadcast { message, resp_tx } => {
-                        state.broadcast(message);
-                        let _ = resp_tx.send(());
-                    }
-                    Command::GetNextId { resp_tx } => {
-                        state.next_id += 1;
-                        let _ = resp_tx.send(state.next_id);
-                    }
-                    Command::RemoveClient { id, resp_tx } => {
-                        if !state.clients.is_empty() {
-                            state.clients.remove(&id);
-                            log!("client id:{id} detached (size: {})", state.clients.len());
-                        }
+                    Command::Leave { id, resp_tx } => {
+                        state.leave(id);
                         let _ = resp_tx.send(());
                     }
                     Command::Destroy { resp_tx } => {
@@ -127,6 +87,13 @@ impl ChatRoom {
                         let photo = state.photos.get(&username).map(|e| e.to_owned());
                         let _ = resp_tx.send(photo);
                     }
+                    Command::OnMessageReceived {
+                        sender_id,
+                        message,
+                        resp_tx,
+                    } => {
+                        let _ = resp_tx.send(state.on_message_received(sender_id, message).await);
+                    }
                 }
             }
             log!("room `{}` dropped", &state.room.uid);
@@ -142,23 +109,17 @@ impl ChatRoom {
     ) -> Result<HttpResponse, ProtocolError> {
         use hyper_tungstenite::*;
         if is_upgrade_request(&req) {
-            let (response, websocket) = upgrade(&mut req, None)?;
+            let (response, socket) = upgrade(&mut req, None)?;
             let this = self.clone();
-            let id = this.op.GetNextId().await;
-            let me = Participant {
-                username: params.username,
-                display: params.display,
-            };
+
             tokio::spawn(async move {
-                let client = ChatClient::create(websocket, this.clone(), me, id).await;
-                match client {
-                    Ok(client) => {
-                        this.op.AddClient(client, params.image_url).await;
-                    }
-                    Err(e) => {
-                        log!("create client failed: {:?}", e);
-                    }
+                // FIXME: do not unwrap
+                let (sink, mut stream) = socket.await.unwrap().split();
+                let id = this.op.Join(sink, params).await;
+                while let Some(message) = stream.try_next().await.ok().flatten() {
+                    this.op.OnMessageReceived(id, message).await;
                 }
+                this.op.Leave(id).await;
             });
             Ok(response)
         } else {
@@ -169,10 +130,7 @@ impl ChatRoom {
     }
 }
 
-struct ChatRoomInner<F>
-where
-    F: Fn(String),
-{
+struct ChatRoomInner {
     room: Room,
     clients: HashMap<usize, ChatClient>,
     photos: HashMap<String, String>,
@@ -182,15 +140,11 @@ where
     room_name: String,
     messages: usize,
     next_id: usize,
-    detached: bool,
-    on_room_detached: F,
+    is_destroyed: bool,
 }
 
-impl<F> ChatRoomInner<F>
-where
-    F: Fn(String),
-{
-    fn new(room: Room, on_room_detached: F) -> Self {
+impl ChatRoomInner {
+    fn new(room: Room) -> Self {
         let rest_client = match &room.post {
             None => None,
             Some(post) => Some(RestClient::create(post.clone())),
@@ -203,9 +157,153 @@ where
             photos: HashMap::new(),
             next_id: 0,
             messages: 0,
-            detached: false,
-            on_room_detached,
+            is_destroyed: false,
             rest_client,
+        }
+    }
+    fn join(&mut self, socket: WebSocketSink, params: JoinParams) -> usize {
+        self.next_id += 1;
+        let id = self.next_id;
+        let me = Participant {
+            username: params.username,
+            display: params.display,
+        };
+        let client = ChatClient::new(socket, me);
+        if client.me.username.is_some() && params.image_url.is_some() {
+            self.photos.insert(
+                client.me.username.clone().unwrap(),
+                params.image_url.unwrap(),
+            );
+        }
+        let participant = &client.me;
+        let event = &TextRoomEvent::Joined {
+            username: participant.username.as_deref(),
+            display: participant.display.as_deref(),
+            participants: self.count(),
+        };
+        self.broadcast_json(event);
+        log!(
+            "'{}' joined (id: {}, count:{})",
+            participant.display.or_empty(),
+            id,
+            self.clients.len() + 1
+        );
+
+        self.clients.insert(id, client);
+        id
+    }
+
+    fn leave(&mut self, id: usize) -> Option<ChatClient> {
+        if let Some(client) = self.clients.remove(&id) {
+            let len = self.clients.len();
+            println!("`{}` left (size={len})", client.me.display.or_empty(),);
+            let event = &TextRoomEvent::Left {
+                username: client.me.username.as_deref(),
+                display: client.me.display.as_deref(),
+                participants: len,
+            };
+            self.broadcast(serde_json::to_string(event).unwrap());
+            Some(client)
+        } else {
+            None
+        }
+    }
+
+    async fn on_message_received(&mut self, sender_id: usize, message: WsMessage) {
+        match message {
+            WsMessage::Text(text) => {
+                self.on_listen(sender_id, text);
+            }
+            WsMessage::Binary(msg) => {
+                log!("unexpected binary message: {:02X?}", msg);
+            }
+            WsMessage::Ping(_) => {}
+            WsMessage::Pong(_) => {
+                let now = Instant::now();
+                log!("received pong at {:?}", now);
+                // self.last_pong = now;
+            }
+            WsMessage::Close(msg) => {
+                if let Some(msg) = &msg {
+                    log!(
+                        "received close message with code {} and message: {}",
+                        msg.code,
+                        msg.reason
+                    );
+                } else {
+                    log!("Received close message");
+                }
+                // TODO: should close this instance?
+            }
+            WsMessage::Frame(_) => {}
+        }
+    }
+    fn on_listen(&mut self, sender_id: usize, message: String) {
+        log!("receive: {message}");
+
+        let response = match serde_json::from_str(&message) {
+            Ok(value) => self.handle_request(sender_id, value),
+            Err(e) => {
+                eprintln!("parse json failed: {:?}", e);
+                serde_json::from_str::<UnknownTextRoomRequest>(&message)
+                    .map(|e| e.transaction)
+                    .unwrap_or(None)
+                    .map(|transaction| TextRoomResponse::Error {
+                        transaction: Some(transaction),
+                        error: e.to_string(),
+                    })
+            }
+        };
+        if let Some(response) = response {
+            log!("reply: {:?}", response);
+            self.reply_json(sender_id, &response);
+        }
+    }
+
+    fn handle_request(
+        &mut self,
+        sender_id: usize,
+        request: TextRoomRequest,
+    ) -> Option<TextRoomResponse> {
+        if self.is_destroyed {
+            return Some(TextRoomResponse::destroyed(request.transaction()));
+        }
+        log!("handling ws message: {:?}", &request);
+        match request {
+            TextRoomRequest::Message { r#type, text, .. } => {
+                self.send_message(sender_id, r#type, text);
+                None
+            }
+            TextRoomRequest::Announcement {
+                secret,
+                r#type,
+                text,
+                transaction,
+                ..
+            } => {
+                if self.room.secret.deref() == &secret {
+                    self.announce(sender_id, r#type, text);
+                    None
+                } else {
+                    Some(TextRoomResponse::secret(transaction))
+                }
+            }
+            TextRoomRequest::Leave { transaction } => {
+                self.leave(sender_id);
+                Some(TextRoomResponse::left(transaction))
+            }
+            TextRoomRequest::Ban {
+                secret,
+                username,
+                transaction,
+            } => {
+                if self.room.secret.deref() == &secret {
+                    self.ban(sender_id, username);
+                    None
+                } else {
+                    Some(TextRoomResponse::secret(transaction))
+                }
+            }
         }
     }
 
@@ -225,6 +323,10 @@ where
         self.clients.iter().map(|(_, e)| e.me.clone()).collect()
     }
 
+    fn participant_by_id(&self, id: usize) -> Option<&Participant> {
+        self.clients.get(&id).map(|e| &e.me)
+    }
+
     fn last_announcement(&self, types: Vec<String>) -> HashMap<String, String> {
         let mut result = HashMap::new();
         for r#type in types {
@@ -236,102 +338,100 @@ where
         result
     }
 
-    fn add_client(&mut self, id: usize, client: ChatClient, image_url: Option<String>) {
-        if client.me.username.is_some() && image_url.is_some() {
-            self.photos
-                .insert(client.me.username.clone().unwrap(), image_url.unwrap());
-        }
-        let participant = &client.me;
-        let event = &TextRoomEvent::Joined {
-            username: participant.username.as_deref(),
-            display: participant.display.as_deref(),
-            participants: self.count(),
-        };
-        self.broadcast_json(event);
-        log!(
-            "'{}' joined (id: {}, count:{})",
-            participant.display.or_empty(),
-            id,
-            self.clients.len() + 1
-        );
+    fn send_message(&mut self, sender_id: usize, r#type: String, text: String) {
+        if let Some(sender) = self.participant_by_id(sender_id) {
+            if sender.username.is_none() || sender.display.is_none() {
+                return;
+            }
+            let now = Utc::now();
+            let username = sender.username.as_ref().unwrap();
+            let display = sender.display.as_ref().unwrap();
 
-        self.clients.insert(id, client);
-    }
-    fn send_message(&mut self, sender: Participant, r#type: String, text: String) {
-        if sender.username.is_none() || sender.display.is_none() {
-            return;
-        }
-        let now = Utc::now();
-        let username = sender.username.unwrap();
-        let display = sender.display.unwrap();
-
-        self.broadcast_json(&TextRoomEvent::Message {
-            from: &username,
-            display: &display,
-            date: now,
-            text: &text,
-            r#type: &r#type,
-        });
-        self.messages += 1;
-
-        self.post(
-            &Message {
-                room: &self.room_name,
-                textroom: Message::MESSAGE,
-                r#type: &r#type,
-                text: &text,
+            self.broadcast_json(&TextRoomEvent::Message {
+                from: username,
+                display,
                 date: now,
-                from: &username,
-            },
-            true,
-        );
-    }
-    fn announce(&mut self, sender: Participant, r#type: String, text: String) {
-        let now = Utc::now();
-        self.broadcast_json(&TextRoomEvent::Announcement {
-            date: now,
-            text: &text,
-            r#type: &r#type,
-        });
-        self.messages += 1;
-
-        self.post(
-            &Message {
-                room: &self.room_name,
-                textroom: Message::ANNOUNCEMENT,
-                r#type: &r#type,
                 text: &text,
-                date: now,
-                from: &sender.username.unwrap(),
-            },
-            true,
-        );
+                r#type: &r#type,
+            });
 
-        self.last_announcements.insert(r#type, text);
+            self.post(
+                &Message {
+                    room: &self.room_name,
+                    textroom: Message::MESSAGE,
+                    r#type: &r#type,
+                    text: &text,
+                    date: now,
+                    from: &username,
+                },
+                true,
+            );
+
+            self.messages += 1;
+        }
+    }
+    fn announce(&mut self, from_sender_id: usize, r#type: String, text: String) {
+        if let Some(sender) = self
+            .participant_by_id(from_sender_id)
+            .map(|e| e.username.as_deref())
+            .flatten()
+        {
+            let now = Utc::now();
+            self.broadcast_json(&TextRoomEvent::Announcement {
+                date: now,
+                text: &text,
+                r#type: &r#type,
+            });
+
+            self.post(
+                &Message {
+                    room: &self.room_name,
+                    textroom: Message::ANNOUNCEMENT,
+                    r#type: &r#type,
+                    text: &text,
+                    date: now,
+                    from: sender,
+                },
+                true,
+            );
+
+            self.messages += 1;
+            self.last_announcements.insert(r#type, text);
+        }
     }
 
-    fn ban(&self, from: Option<String>, victim: String) {
-        log!("{:?} wants to ban {victim}", from);
-        let victims = self
-            .clients
-            .iter()
-            .filter(|(_, e)| e.me.username.contains(&victim));
-        let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
-        for (_, client) in victims {
-            client.op.spawn().Send(WsMessage::Text(event.clone()));
-            client.op.spawn().Leave();
+    fn ban(&mut self, sender_id: usize, victim: String) {
+        if let Some(from) = self
+            .participant_by_id(sender_id)
+            .map(|e| e.username.as_deref())
+            .flatten()
+        {
+            log!("{from} wants to ban {victim}");
+
+            self.post(
+                &Message {
+                    textroom: Message::MODERATE,
+                    room: &self.room_name,
+                    r#type: Message::TYPE_BAN.into(),
+                    text: &victim,
+                    date: Utc::now(),
+                    from,
+                },
+                false,
+            );
+            let victims: Vec<usize> = self
+                .clients
+                .iter()
+                .filter(|(_, client)| client.me.username.eq_to_some(&victim))
+                .map(|(id, _)| id.to_owned())
+                .collect();
+            let event = serde_json::to_string(&TextRoomEvent::Banned).unwrap();
+            for id in victims {
+                if let Some(client) = self.leave(id) {
+                    client.op.spawn().Send(WsMessage::Text(event.clone()));
+                }
+            }
         }
-        self.post(
-            &Message {
-                textroom: Message::MODERATE,
-                room: &self.room_name,
-                r#type: Message::TYPE_BAN.into(),
-                text: &victim,
-                date: Utc::now(),
-                from: from.or_empty(),
-            },
-            false,
-        );
     }
 
     fn post_created(&self) {
@@ -364,17 +464,26 @@ where
         }
     }
 
-    fn detach(&mut self) {
-        if !self.detached {
-            self.detached = true;
-            self.broadcast_json(&TextRoomEvent::Destroyed);
-            self.clients.clear();
-            (self.on_room_detached)(self.room.uid.clone());
-            log!("room `{}` destroyed", self.room_name)
+    fn reply_json<T: Serialize>(&self, receiver_id: usize, body: &T) {
+        if let Some(client) = self.clients.get(&receiver_id) {
+            client
+                .op
+                .spawn()
+                .Send(WsMessage::Text(serde_json::to_string(body).unwrap()));
         }
     }
     fn destroy(&mut self) {
-        self.detach();
-        self.post(&Message::room_destroyed(&self.room_name), false)
+        if !self.is_destroyed {
+            self.is_destroyed = true;
+            self.broadcast_json(&TextRoomEvent::Destroyed);
+            self.clients.clear();
+            log!("room `{}` destroyed", self.room_name);
+            self.post(&Message::room_destroyed(&self.room_name), false)
+        }
     }
+}
+
+#[derive(Deserialize)]
+struct UnknownTextRoomRequest {
+    transaction: Option<String>,
 }
