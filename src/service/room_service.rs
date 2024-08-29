@@ -439,18 +439,18 @@ impl ChatRoomInner {
     }
 
     fn post(&self, message: &Message, should_check_type: bool) {
-        if let Some(rest_client) = &self.rest_client {
-            if should_check_type
-                && !self
-                    .room
-                    .post_types
-                    .iter()
-                    .any(|e| e.deref() == message.r#type)
-            {
-                return;
-            }
-            rest_client.spawn_post(message);
-        }
+        // if let Some(rest_client) = &self.rest_client {
+        //     if should_check_type
+        //         && !self
+        //             .room
+        //             .post_types
+        //             .iter()
+        //             .any(|e| e.deref() == message.r#type)
+        //     {
+        //         return;
+        //     }
+        //     rest_client.spawn_post(message);
+        // }
     }
 
     fn broadcast_json<T: Serialize>(&self, body: &T) {
