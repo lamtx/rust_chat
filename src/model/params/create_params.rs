@@ -1,8 +1,12 @@
+use serde::Deserialize;
+
 use crate::misc::{Params, ParseParamError, QueryParams};
 
+#[derive(Deserialize)]
 pub struct CreateParams {
     pub secret: String,
     pub post: Option<String>,
+    #[serde(default)]
     pub post_types: Vec<String>,
 }
 

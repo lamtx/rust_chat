@@ -12,6 +12,7 @@ command! {
     pub DestroyRoom(room: String, secret: String) -> Result<(), ServiceError>;
 }
 
+#[derive(Clone)]
 pub struct ChatService {
     pub op: CommandSender,
 }

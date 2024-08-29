@@ -1,5 +1,5 @@
+use axum::extract::ws::Message;
 use futures::sink::SinkExt;
-use hyper_tungstenite::tungstenite::Message;
 
 use crate::{command, log};
 use crate::misc::{OrEmpty, WebSocketSink};

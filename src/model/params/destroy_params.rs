@@ -1,5 +1,8 @@
+use serde::Deserialize;
+
 use crate::misc::{Params, ParseParamError, QueryParams};
 
+#[derive(Deserialize)]
 pub struct DestroyParams {
     pub secret: String,
 }

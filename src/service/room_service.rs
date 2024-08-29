@@ -3,10 +3,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::extract::WebSocketUpgrade;
+use axum::extract::ws::Message as WsMessage;
+use axum::response::IntoResponse;
 use chrono::Utc;
 use futures::{StreamExt, TryStreamExt};
-use hyper_tungstenite::tungstenite::error::ProtocolError;
-use hyper_tungstenite::tungstenite::Message as WsMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::{command, log};
@@ -102,31 +103,16 @@ impl ChatRoom {
         chat_room
     }
 
-    pub async fn join(
-        &self,
-        mut req: HttpRequest,
-        params: JoinParams,
-    ) -> Result<HttpResponse, ProtocolError> {
-        use hyper_tungstenite::*;
-        if is_upgrade_request(&req) {
-            let (response, socket) = upgrade(&mut req, None)?;
-            let this = self.clone();
-
-            tokio::spawn(async move {
-                // FIXME: do not unwrap
-                let (sink, mut stream) = socket.await.unwrap().split();
-                let id = this.op.Join(sink, params).await;
-                while let Some(message) = stream.try_next().await.ok().flatten() {
-                    this.op.OnMessageReceived(id, message).await;
-                }
-                this.op.Leave(id).await;
-            });
-            Ok(response)
-        } else {
-            log!("The request is not upgradable to web socket");
-            Err(ProtocolError::MissingConnectionUpgradeHeader)
-            // Or MissingUpgradeWebSocketHeader but it's not importance
-        }
+    pub async fn join(&self, ws: WebSocketUpgrade, params: JoinParams) -> impl IntoResponse {
+        let this = self.clone();
+        ws.on_upgrade(|socket| async move {
+            let (sink, mut stream) = socket.split();
+            let id = this.op.Join(sink, params).await;
+            while let Some(message) = stream.try_next().await.ok().flatten() {
+                this.op.OnMessageReceived(id, message).await;
+            }
+            this.op.Leave(id).await;
+        })
     }
 }
 
@@ -235,7 +221,6 @@ impl ChatRoomInner {
                 }
                 // TODO: should close this instance?
             }
-            WsMessage::Frame(_) => {}
         }
     }
     fn on_listen(&mut self, sender_id: usize, message: String) {

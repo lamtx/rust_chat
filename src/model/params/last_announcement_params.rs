@@ -1,6 +1,8 @@
+use serde::Deserialize;
+
 use crate::misc::{Params, ParseParamError, QueryParams};
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct LastAnnouncementParams {
     pub types: Vec<String>,
 }
